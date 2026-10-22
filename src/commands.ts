@@ -449,19 +449,23 @@ export const OS_COMMANDS: ReadonlySet<string> = new Set([
 
 /** Package manager subcommands that run the command given as their arguments */
 export const EXEC_SUBCOMMANDS: Readonly<
-  Record<'bun' | 'npm' | 'pnpm' | 'yarn', readonly string[]>
+  Record<'aube' | 'bun' | 'npm' | 'pnpm' | 'upm' | 'yarn', readonly string[]>
 > = {
+  aube: ['dlx', 'exec'],
   bun: ['x'],
   npm: ['exec', 'x'],
   pnpm: ['dlx', 'exec'],
+  upm: ['exec'],
   yarn: ['dlx', 'exec'],
 };
 
 /** Options of package managers (before the subcommand) that take a value */
 export const PACKAGE_MANAGER_VALUE_OPTIONS: readonly string[] = [
+  '--cd',
   '--cwd',
   '--dir',
   '--filter',
+  '--filter-prod',
   '--prefix',
   '--workspace',
   '-C',
@@ -484,6 +488,7 @@ export const PATTERN_COMMANDS: ReadonlySet<string> = new Set([
 
 /** Commands that run the command given as their arguments, with their options that take a value */
 export const WRAPPER_VALUE_OPTIONS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['aubx', ['--package', '-p']],
   ['bunx', ['--package', '-p']],
   ['command', []],
   ['env', ['--chdir', '--split-string', '--unset', '-C', '-S', '-u']],
@@ -494,6 +499,7 @@ export const WRAPPER_VALUE_OPTIONS: ReadonlyMap<string, readonly string[]> = new
   ['pnpx', ['--package', '-p']],
   ['sudo', ['-C', '-D', '-g', '-h', '-p', '-r', '-t', '-U', '-u']],
   ['time', ['-f', '-o']],
+  ['upx', ['--package', '-p']],
   ['xargs', ['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s']],
 ]);
 

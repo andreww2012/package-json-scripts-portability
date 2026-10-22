@@ -44,6 +44,12 @@ export interface AnalyzeScriptOptions {
   /** Commands that shouldn't be reported */
   ignoreCommands?: readonly string[];
 
+  /**
+   * Whether `node --run` runs the script.
+   * Unlike npm and pnpm, it doesn't set `HOME`, `INIT_CWD` and `npm_*` variables
+   */
+  nodeRun?: boolean;
+
   /** Whether the script runs in Yarn's portable shell, which supports POSIX syntax everywhere */
   portableShell?: boolean;
 
@@ -199,7 +205,7 @@ class ScriptAnalyzer {
       (script, part, context) => {
         this.#walkNestedScript(script, part, context);
       },
-      options.yarnClassic || false,
+      options,
     );
     this.#redirections = new RedirectionChecker(this.#reporter, this.#words);
     this.#commands = new CommandChecker(this.#reporter, options, (words, context, nested) => {

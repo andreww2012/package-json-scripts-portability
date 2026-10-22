@@ -32,6 +32,7 @@ const summarizeFixes = (script: string, options?: AnalyzeScriptOptions): FixSumm
       fix ? [[script.slice(pos, end), fix.description, applyFix(script, fix)]] : [],
     );
 
+const nodeRun = {nodeRun: true};
 const portable = {portableShell: true};
 const yarnClassic = {yarnClassic: true};
 
@@ -675,6 +676,36 @@ describe('analyzeScript', () => {
     });
   });
 
+  describe('exec commands of package managers', () => {
+    it.each<[string, Summary[]]>([
+      ['aube exec rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
+      ['aube dlx rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
+      ['aubx rimraf dist && aubx -p foo rm -rf tmp', [['unsupportedCommand', 'rm', 'win32']]],
+      ['aube --cd app --filter-prod web exec rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
+      ['upm exec rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
+      ['upm --dir app exec rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
+      ['upx rm -rf tmp', [['unsupportedCommand', 'rm', 'win32']]],
+      // Scripts run by name
+      ['aube run clean && aubr build && upm run build', []], // cspell:disable-line
+      // npm's and upm's `-c` takes a shell line
+      ['upm exec -p del-cli -c "rm x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['upx -c "open x"', [['unsupportedCommand', 'open', 'linux,win32']]],
+      // pnpm's and aube's `-c` runs the command and its arguments as a shell line
+      [
+        'aube exec -c "rm -rf x && open y"',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['unsupportedCommand', 'open', 'linux,win32'],
+        ],
+      ],
+      ['pnpm exec -c "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['pnpm dlx --shell-mode "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['aubx -c rm -rf tmp', [['unsupportedCommand', 'rm -rf tmp', 'win32']]],
+    ])('%s', (script, expected) => {
+      expect(summarize(script)).toStrictEqual(expected);
+    });
+  });
+
   describe('portable shell', () => {
     it.each<[string, Summary[]]>([
       ['NODE_ENV=production node x; echo $FOO > /dev/null', []],
@@ -1228,10 +1259,73 @@ describe('analyzeScript', () => {
       ['node x.js --tmp $TMPDIR', 'Use a Node.js script instead.'],
       ['node x.js --home ${HOME}', 'Use `cross-env` or a Node.js script instead.'],
       ['node x.js --home ${HOME}', 'Use a Node.js script instead.', yarnClassic],
+      ['node x.js --home ${HOME}', 'Use a Node.js script instead.', nodeRun],
       ['node x.js --env $NODE_ENV', 'Use `cross-env` or a Node.js script instead.'],
     ])("doesn't suggest `cross-env` for them in %j", (script, suggestion, options) => {
       expect(analyzeScript(script, options).map((issue) => issue.data.suggestion)).toStrictEqual([
         suggestion,
+      ]);
+    });
+  });
+
+  describe("variables that `node --run` doesn't set", () => {
+    it.each<[string, Summary[]]>([
+      // cmd.exe doesn't expand `$npm_package_version` anyway
+      [
+        'echo $npm_package_version ${npm_lifecycle_event}',
+        [
+          ['unsupportedSyntax', '$npm_package_version', 'win32'],
+          ['inconsistentBehavior', '$npm_package_version', 'darwin,linux'],
+          ['unsupportedSyntax', '${npm_lifecycle_event}', 'win32'],
+          ['inconsistentBehavior', '${npm_lifecycle_event}', 'darwin,linux'],
+        ],
+      ],
+      [
+        'node x.js --cwd $INIT_CWD',
+        [
+          ['unsupportedSyntax', '$INIT_CWD', 'win32'],
+          ['inconsistentBehavior', '$INIT_CWD', 'darwin,linux'],
+        ],
+      ],
+      [
+        'cross-env VERSION=$npm_package_version jest',
+        [['inconsistentBehavior', '$npm_package_version', 'darwin,linux,win32']],
+      ],
+      [
+        "sh -c 'echo $npm_lifecycle_event'",
+        [
+          ['unsupportedCommand', 'sh', 'win32'],
+          ['inconsistentBehavior', '$npm_lifecycle_event', 'darwin,linux'],
+        ],
+      ],
+      [
+        'echo %npm_package_version%',
+        [
+          ['unsupportedSyntax', '%npm_package_version%', 'darwin,linux'],
+          ['inconsistentBehavior', '%npm_package_version%', 'win32'],
+        ],
+      ],
+      [
+        'cross-env CONFIG=${HOME}/.config node x.js',
+        [['inconsistentBehavior', '${HOME}', 'win32']],
+      ],
+      // Variables of the user
+      ['cross-env TOKEN=$NPM_TOKEN jest', []],
+    ])('%j', (script, expected) => {
+      expect(summarize(script, nodeRun)).toStrictEqual(expected);
+    });
+
+    it('explains why the variable is empty', () => {
+      expect(
+        analyzeScript('cross-env VERSION=$npm_package_version jest', nodeRun).map(
+          (issue) => issue.data,
+        ),
+      ).toStrictEqual([
+        {
+          reason: "`node --run` doesn't set it",
+          suggestion: 'Use a Node.js script instead.',
+          syntax: 'The variable `$npm_package_version`',
+        },
       ]);
     });
   });

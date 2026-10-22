@@ -409,6 +409,16 @@ export class CommandChecker {
       }
     };
 
+    // Joins the arguments from an index on into a single script, e.g. in `cross-env-shell rm $DIR`
+    const nestedShellLine = (index: number, isCrossEnv = false) => {
+      if (index !== -1 && depth < MAX_DEPTH) {
+        this.#analyzeNestedWords(argumentWords.slice(index), context, {
+          crossEnv: isCrossEnv,
+          shell: 'native',
+        });
+      }
+    };
+
     // The script of a shell's `-c` option, e.g. in `sh -c "..."`
     const commandStringIndex = () => {
       const index = values.findIndex((value) => value != null && isCommandOption(value));
@@ -423,6 +433,16 @@ export class CommandChecker {
         (value, i) => i >= start && i < end && (value === '-c' || value === '--call'),
       );
       return index === -1 ? -1 : index + 1;
+    };
+    // `-c`/`--shell-mode` of pnpm and aube, after which the command and its arguments are a shell
+    // line
+    const shellModeIndex = (start: number, valueOptions: readonly string[]) => {
+      const commandIndex = findCommandIndex(values, start, valueOptions);
+      return values
+        .slice(start, commandIndex === -1 ? values.length : commandIndex)
+        .some((value) => value === '-c' || value === '--shell-mode')
+        ? commandIndex
+        : -1;
     };
 
     switch (name) {
@@ -465,13 +485,7 @@ export class CommandChecker {
           return invoke(index, {...context, crossEnv: true}, true);
         }
 
-        // It joins its arguments into a single script, e.g. `cross-env-shell npm install $DEP`
-        if (index !== -1 && depth < MAX_DEPTH) {
-          this.#analyzeNestedWords(argumentWords.slice(index), context, {
-            crossEnv: true,
-            shell: 'native',
-          });
-        }
+        nestedShellLine(index, true);
         return undefined;
       }
 
@@ -481,9 +495,11 @@ export class CommandChecker {
         return undefined;
       }
 
+      case 'aube':
       case 'bun':
       case 'npm':
       case 'pnpm':
+      case 'upm':
       case 'yarn': {
         // e.g. `pnpm exec rm -rf dist`
         const subcommand = findCommandIndex(values, 0, PACKAGE_MANAGER_VALUE_OPTIONS);
@@ -492,8 +508,14 @@ export class CommandChecker {
         }
 
         const call = callIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
-        if (name === 'npm' && call !== -1) {
+        if (call !== -1 && (name === 'npm' || name === 'upm')) {
           nestedShellString(call);
+          return undefined;
+        }
+
+        const shellLine = shellModeIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
+        if (shellLine !== -1 && (name === 'aube' || name === 'pnpm')) {
+          nestedShellLine(shellLine);
           return undefined;
         }
 
@@ -501,10 +523,20 @@ export class CommandChecker {
       }
 
       case 'npx':
-      case 'pnpx': {
+      case 'upx': {
         const call = callIndex(0, WRAPPER_VALUE_OPTIONS.get(name) || []);
         if (call !== -1) {
           nestedShellString(call);
+          return undefined;
+        }
+        break;
+      }
+
+      case 'aubx':
+      case 'pnpx': {
+        const shellLine = shellModeIndex(0, WRAPPER_VALUE_OPTIONS.get(name) || []);
+        if (shellLine !== -1) {
+          nestedShellLine(shellLine);
           return undefined;
         }
         break;

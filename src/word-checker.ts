@@ -12,6 +12,7 @@ import type {
   Word,
   WordPart,
 } from 'unbash';
+import type {AnalyzeScriptOptions} from './analyze-script.ts';
 import {OS_COMMANDS, PATTERN_COMMANDS} from './commands.ts';
 import {type Context, type Range, type SyntaxKind, bashLabel, withCovered} from './context.ts';
 import {braceExpansionFix, quoting, replacement} from './fixes.ts';
@@ -90,6 +91,9 @@ const POSIX_ONLY_VARIABLES: ReadonlySet<string> = new Set([
   'TMPDIR',
   'USER',
 ]);
+
+/** Variables that package managers set, but `node --run` doesn't, e.g. `npm_package_version` */
+const PACKAGE_MANAGER_VARIABLE = /^(?:npm_\w+|INIT_CWD)$/;
 
 /** cmd.exe statements, which POSIX shells parse as commands, e.g. `IF` in `IF EXIST dist ...` */
 const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
@@ -186,15 +190,22 @@ type NestedScriptWalker = (script: Script, part: Range, context: Context) => voi
 
 /** Checks words, e.g. for quotes, expansions and paths */
 export class WordChecker {
-  /** Whether the package manager doesn't set `HOME`, like Yarn v1 */
+  /** Whether the script runs without `HOME` being set, like with Yarn v1 */
   readonly #isHomeUnset: boolean;
+  /** Whether `node --run` runs the script, which doesn't set package managers' variables */
+  readonly #isNodeRun: boolean;
   readonly #reporter: Reporter;
   readonly #walkNestedScript: NestedScriptWalker;
 
-  constructor(reporter: Reporter, walkNestedScript: NestedScriptWalker, isHomeUnset: boolean) {
+  constructor(
+    reporter: Reporter,
+    walkNestedScript: NestedScriptWalker,
+    {nodeRun = false, yarnClassic = false}: AnalyzeScriptOptions,
+  ) {
     this.#reporter = reporter;
     this.#walkNestedScript = walkNestedScript;
-    this.#isHomeUnset = isHomeUnset;
+    this.#isHomeUnset = nodeRun || yarnClassic;
+    this.#isNodeRun = nodeRun;
   }
 
   /**
@@ -255,6 +266,29 @@ export class WordChecker {
         suggestion: NODE_SCRIPT_SUGGESTION,
         syntax: `The Bash variable \`$${name}\``,
       });
+    }
+  }
+
+  /**
+   * Reports a variable that package managers set, but `node --run` doesn't.
+   * @param name Name of the variable, e.g. `npm_package_version`
+   * @param node The node to report
+   * @param context Where the variable is
+   * @param text How the script refers to the variable, e.g. `%npm_package_version%`
+   */
+  #checkPackageManagerVariable(name: string, node: Range, context: Context, text = `$${name}`) {
+    if (this.#isMissingPackageManagerVariable(name)) {
+      this.#reporter.report(
+        context,
+        node,
+        'inconsistentBehavior',
+        {
+          reason: "`node --run` doesn't set it",
+          suggestion: NODE_SCRIPT_SUGGESTION,
+          syntax: `The variable \`${text}\``,
+        },
+        PLATFORMS,
+      );
     }
   }
 
@@ -410,6 +444,7 @@ export class WordChecker {
     // Operands can contain further expansions, e.g. `${A:-$(cmd)}`
     const nestedContext = withCovered(context, covered);
     this.#checkBashVariable(part.parameter, part, nestedContext);
+    this.#checkPackageManagerVariable(part.parameter, part, nestedContext);
     const operands = [index, ...(operation ? parameterOperands(operation) : [])];
     operands.forEach((operand) => {
       if (operand) {
@@ -573,7 +608,9 @@ export class WordChecker {
                   : this.#variableSuggestion(name),
                 syntax: `The variable expansion \`${part.text}\``,
               });
-        this.#checkBashVariable(name, part, withCovered(context, covered));
+        const nestedContext = withCovered(context, covered);
+        this.#checkBashVariable(name, part, nestedContext);
+        this.#checkPackageManagerVariable(name, part, nestedContext);
         break;
       }
 
@@ -767,7 +804,7 @@ export class WordChecker {
       const match = WINDOWS_VARIABLE.exec(text);
       // Other `%` signs indicate a format string, e.g. `--pretty=format:%C(bold)%ad%C(reset)`
       if (match && !text.replaceAll(WINDOWS_VARIABLES, '').includes('%')) {
-        this.#reporter.report(
+        const covered = this.#reporter.report(
           context,
           word,
           'unsupportedSyntax',
@@ -777,6 +814,10 @@ export class WordChecker {
           },
           context.portable ? PLATFORMS : POSIX_PLATFORMS,
         );
+        const nestedContext = withCovered(context, covered);
+        text.matchAll(WINDOWS_VARIABLES).forEach(([reference]) => {
+          this.#checkPackageManagerVariable(reference.slice(1, -1), word, nestedContext, reference);
+        });
       }
     }
 
@@ -793,11 +834,18 @@ export class WordChecker {
     return POSIX_ONLY_VARIABLES.has(name) || (name === 'HOME' && this.#isHomeUnset);
   }
 
+  /** Checks whether a variable is one that package managers set, but `node --run` doesn't */
+  #isMissingPackageManagerVariable(name: string) {
+    return this.#isNodeRun && PACKAGE_MANAGER_VARIABLE.test(name);
+  }
+
   /** Gets what to use instead of a variable on Windows, where `cross-env` can't help for some */
   #variableSuggestion(name: string) {
     if (name === 'PWD') {
       return 'Use a relative path or a Node.js script instead.';
     }
-    return this.#isUnsetOnWindows(name) ? NODE_SCRIPT_SUGGESTION : VARIABLE_SUGGESTION;
+    return this.#isUnsetOnWindows(name) || this.#isMissingPackageManagerVariable(name)
+      ? NODE_SCRIPT_SUGGESTION
+      : VARIABLE_SUGGESTION;
   }
 }
