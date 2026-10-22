@@ -1,6 +1,6 @@
 {
   "name": "package-json-scripts-portability",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Finds package.json scripts that don't work the same on Windows, macOS and Linux, with npm, pnpm, Yarn or Bun, and suggests fixes.",
   "keywords": [
     "npm-scripts",
