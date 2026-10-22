@@ -1,0 +1,31 @@
+// Based on https://www.totaltypescript.com/tsconfig-cheat-sheet
+{
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
+    /* Base Options: */
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "target": "es2022",
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "moduleDetection": "force",
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node", "vitest/globals"],
+
+    /* Strictness */
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    /* NOT transpiling with TypeScript, as it doesn't rewrite `.ts` in imports like `@/foo.ts`: */
+    "module": "NodeNext",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+
+    /* If your code doesn't run in the DOM: */
+    "lib": ["es2024", "ESNext.Array", "ESNext.Collection", "ESNext.Iterator"]
+  }
+}
