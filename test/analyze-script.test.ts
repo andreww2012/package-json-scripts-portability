@@ -1,4 +1,4 @@
-import {type AnalyzeScriptOptions, analyzeScript, applyFix} from '../src/index.ts';
+import {type AnalyzeScriptOptions, type Runner, analyzeScript, applyFix} from '../src/index.ts';
 
 type Summary = [messageId: string, text: string, platforms: string];
 type FixSummary = [text: string, description: string, fixed: string];
@@ -32,9 +32,9 @@ const summarizeFixes = (script: string, options?: AnalyzeScriptOptions): FixSumm
       fix ? [[script.slice(pos, end), fix.description, applyFix(script, fix)]] : [],
     );
 
-const nodeRun = {nodeRun: true};
-const portable = {portableShell: true};
-const yarnClassic = {yarnClassic: true};
+const nodeRun: AnalyzeScriptOptions = {runner: 'node'};
+const yarn: AnalyzeScriptOptions = {runner: 'yarn'};
+const yarnClassic: AnalyzeScriptOptions = {runner: 'yarn-classic'};
 
 const QUOTE = 'Quote it with escaped double quotes.';
 const CROSS_ENV = 'Prefix the command with `cross-env`.';
@@ -730,7 +730,7 @@ describe('analyzeScript', () => {
       // Commands like concurrently run their arguments with the system shell
       ['concurrently "NODE_ENV=dev vite"', [['unsupportedSyntax', 'NODE_ENV=dev', 'win32']]],
     ])('%s', (script, expected) => {
-      expect(summarize(script, portable)).toStrictEqual(expected);
+      expect(summarize(script, yarn)).toStrictEqual(expected);
     });
   });
 
@@ -1134,7 +1134,7 @@ describe('analyzeScript', () => {
       ['node x 2>/dev/null', []],
       ['node x --out=/dev/null', [['unsupportedSyntax', '--out=/dev/null', 'win32']]],
     ])('%j in the portable shell', (script, expected) => {
-      expect(summarize(script, portable)).toStrictEqual(expected);
+      expect(summarize(script, yarn)).toStrictEqual(expected);
     });
   });
 
@@ -1235,7 +1235,7 @@ describe('analyzeScript', () => {
           ['inconsistentBehavior', '$PWD', 'win32'],
         ],
       ],
-      // npm and pnpm set `HOME`
+      // npm sets `HOME`
       ['cross-env CONFIG=${HOME}/.config node x.js', []],
       // Variables of the user or the package manager
       ['cross-env NODE_ENV=$NODE_ENV jest', []],
@@ -1244,14 +1244,17 @@ describe('analyzeScript', () => {
       expect(summarize(script)).toStrictEqual(expected);
     });
 
-    it("reports `HOME` when Yarn v1 runs the script, which doesn't set it", () => {
-      expect(summarize('cross-env CONFIG=${HOME}/.config node x.js', yarnClassic)).toStrictEqual([
-        ['inconsistentBehavior', '${HOME}', 'win32'],
-      ]);
-    });
+    it.each<Runner>(['aube', 'node', 'pnpm', 'upm', 'yarn-classic'])(
+      "reports `HOME` when %s runs the script, which doesn't set it",
+      (runner) => {
+        expect(summarize('cross-env CONFIG=${HOME}/.config node x.js', {runner})).toStrictEqual([
+          ['inconsistentBehavior', '${HOME}', 'win32'],
+        ]);
+      },
+    );
 
     it("doesn't report them in Yarn's shell, which expands variables itself", () => {
-      expect(summarize('cross-env NODE_PATH=$PWD/src jest', portable)).toStrictEqual([]);
+      expect(summarize('cross-env NODE_PATH=$PWD/src jest', yarn)).toStrictEqual([]);
     });
 
     it.each<[string, string, AnalyzeScriptOptions?]>([
@@ -1328,6 +1331,45 @@ describe('analyzeScript', () => {
         },
       ]);
     });
+
+    it.each<[string, Summary[]]>([
+      ['cross-env VERSION=$npm_package_version jest', []],
+      [
+        'cross-env CLI=$npm_execpath node x.js',
+        [['inconsistentBehavior', '$npm_execpath', 'darwin,linux,win32']],
+      ],
+    ])('only reports the ones that upm sets in %j', (script, expected) => {
+      expect(summarize(script, {runner: 'upm'})).toStrictEqual(expected);
+    });
+
+    it('names upm in the reason', () => {
+      expect(
+        analyzeScript('cross-env CLI=$npm_execpath node x.js', {runner: 'upm'})[0]?.data.reason,
+      ).toBe("upm doesn't set it");
+    });
+  });
+
+  describe('runners', () => {
+    it("checks the scripts in Yarn's shell when pnpm's `shell-emulator` is on", () => {
+      expect(
+        summarize('npm run a & npm run b', {runner: 'pnpm', shellEmulator: true}),
+      ).toStrictEqual([]);
+    });
+
+    it('ignores `shellEmulator` for other runners', () => {
+      expect(
+        summarize('npm run a & npm run b', {runner: 'npm', shellEmulator: true}),
+      ).toStrictEqual([['inconsistentBehavior', '&', 'win32']]);
+    });
+
+    it.each<Runner>(['aube', 'npm', 'pnpm', 'upm'])(
+      'checks the scripts like npm runs them with %s',
+      (runner) => {
+        expect(summarize('rm -rf dist; echo $npm_package_version', {runner})).toStrictEqual(
+          summarize('rm -rf dist; echo $npm_package_version'),
+        );
+      },
+    );
   });
 
   // Checked on GitHub's Windows runners with npm, pnpm and Yarn v1
@@ -1382,11 +1424,11 @@ describe('analyzeScript', () => {
       // Only `tr` itself
       ["tr -d '\n' < a.txt", [['unsupportedCommand', 'tr', 'win32']]],
     ])("%j in Yarn's shell", (script, expected) => {
-      expect(summarize(script, portable)).toStrictEqual(expected);
+      expect(summarize(script, yarn)).toStrictEqual(expected);
     });
 
     it("doesn't report carriage returns in Yarn's shell", () => {
-      expect(summarize('tsc\r\nvite build', portable)).toStrictEqual([
+      expect(summarize('tsc\r\nvite build', yarn)).toStrictEqual([
         ['unsupportedSyntax', '\n', 'darwin,linux,win32'],
       ]);
     });
@@ -1834,7 +1876,7 @@ describe('analyzeScript', () => {
           [['inconsistentBehavior', String.raw`scripts\build.js`, 'darwin,linux,win32']],
         ],
       ])('%j in the portable shell', (script, expected) => {
-        expect(summarize(script, portable)).toStrictEqual(expected);
+        expect(summarize(script, yarn)).toStrictEqual(expected);
       });
     });
   });

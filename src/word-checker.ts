@@ -12,7 +12,6 @@ import type {
   Word,
   WordPart,
 } from 'unbash';
-import type {AnalyzeScriptOptions} from './analyze-script.ts';
 import {OS_COMMANDS, PATTERN_COMMANDS} from './commands.ts';
 import {type Context, type Range, type SyntaxKind, bashLabel, withCovered} from './context.ts';
 import {braceExpansionFix, quoting, replacement} from './fixes.ts';
@@ -27,6 +26,7 @@ import {
 } from './messages.ts';
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
+import type {RunnerTraits} from './runners.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
   GLOB_PART_TYPES,
@@ -79,7 +79,7 @@ const BASH_VARIABLES: ReadonlyMap<string, SyntaxKind> = new Map([
  * Variables that POSIX shells and systems set, but Windows doesn't, e.g. `PWD`.
  * cmd.exe computes its own dynamic variables, like `%CD%`, so they aren't in the environment
  * either.
- * npm and pnpm set `HOME` on all platforms
+ * Some runners, like npm, set `HOME` on all platforms
  */
 const POSIX_ONLY_VARIABLES: ReadonlySet<string> = new Set([
   ...BASH_VARIABLES.keys(),
@@ -92,7 +92,7 @@ const POSIX_ONLY_VARIABLES: ReadonlySet<string> = new Set([
   'USER',
 ]);
 
-/** Variables that package managers set, but `node --run` doesn't, e.g. `npm_package_version` */
+/** Variables that package managers set, e.g. `npm_package_version` */
 const PACKAGE_MANAGER_VARIABLE = /^(?:npm_\w+|INIT_CWD)$/;
 
 /** cmd.exe statements, which POSIX shells parse as commands, e.g. `IF` in `IF EXIST dist ...` */
@@ -190,22 +190,18 @@ type NestedScriptWalker = (script: Script, part: Range, context: Context) => voi
 
 /** Checks words, e.g. for quotes, expansions and paths */
 export class WordChecker {
-  /** Whether the script runs without `HOME` being set, like with Yarn v1 */
-  readonly #isHomeUnset: boolean;
-  /** Whether `node --run` runs the script, which doesn't set package managers' variables */
-  readonly #isNodeRun: boolean;
   readonly #reporter: Reporter;
+  readonly #runnerTraits: RunnerTraits;
   readonly #walkNestedScript: NestedScriptWalker;
 
   constructor(
     reporter: Reporter,
     walkNestedScript: NestedScriptWalker,
-    {nodeRun = false, yarnClassic = false}: AnalyzeScriptOptions,
+    runnerTraits: RunnerTraits,
   ) {
     this.#reporter = reporter;
     this.#walkNestedScript = walkNestedScript;
-    this.#isHomeUnset = nodeRun || yarnClassic;
-    this.#isNodeRun = nodeRun;
+    this.#runnerTraits = runnerTraits;
   }
 
   /**
@@ -270,7 +266,7 @@ export class WordChecker {
   }
 
   /**
-   * Reports a variable that package managers set, but `node --run` doesn't.
+   * Reports a variable that package managers set, but the runner doesn't, e.g. `node --run`.
    * @param name Name of the variable, e.g. `npm_package_version`
    * @param node The node to report
    * @param context Where the variable is
@@ -283,7 +279,7 @@ export class WordChecker {
         node,
         'inconsistentBehavior',
         {
-          reason: "`node --run` doesn't set it",
+          reason: `${this.#runnerTraits.label} doesn't set it`,
           suggestion: NODE_SCRIPT_SUGGESTION,
           syntax: `The variable \`${text}\``,
         },
@@ -831,12 +827,13 @@ export class WordChecker {
 
   /** Checks whether Windows doesn't set a variable, so `cross-env` replaces it with nothing */
   #isUnsetOnWindows(name: string) {
-    return POSIX_ONLY_VARIABLES.has(name) || (name === 'HOME' && this.#isHomeUnset);
+    return POSIX_ONLY_VARIABLES.has(name) || (name === 'HOME' && !this.#runnerTraits.setsHome);
   }
 
-  /** Checks whether a variable is one that package managers set, but `node --run` doesn't */
+  /** Checks whether a variable is one that package managers set, but the runner doesn't */
   #isMissingPackageManagerVariable(name: string) {
-    return this.#isNodeRun && PACKAGE_MANAGER_VARIABLE.test(name);
+    const variables = this.#runnerTraits.packageManagerVariables;
+    return variables != null && PACKAGE_MANAGER_VARIABLE.test(name) && !variables.has(name);
   }
 
   /** Gets what to use instead of a variable on Windows, where `cross-env` can't help for some */

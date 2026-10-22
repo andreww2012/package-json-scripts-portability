@@ -34,6 +34,7 @@ import {
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import {RedirectionChecker} from './redirection-checker.ts';
 import {Reporter, type ScriptFix} from './reporter.ts';
+import {type Runner, type RunnerTraits, runnerTraits} from './runners.ts';
 import {WordChecker} from './word-checker.ts';
 import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE} from './words.ts';
 
@@ -45,20 +46,14 @@ export interface AnalyzeScriptOptions {
   ignoreCommands?: readonly string[];
 
   /**
-   * Whether `node --run` runs the script.
-   * Unlike npm and pnpm, it doesn't set `HOME`, `INIT_CWD` and `npm_*` variables
+   * What runs the script: a package manager, or `node` for `node --run`.
+   * It decides e.g. which shell runs the script and which environment variables it gets.
+   * Defaults to `npm`
    */
-  nodeRun?: boolean;
+  runner?: Runner;
 
-  /** Whether the script runs in Yarn's portable shell, which supports POSIX syntax everywhere */
-  portableShell?: boolean;
-
-  /**
-   * Whether Yarn v1 runs the script.
-   * Unlike npm and pnpm, it doesn't set `HOME`, and on Windows, it replaces `/` with `\` in the
-   * script's command names
-   */
-  yarnClassic?: boolean;
+  /** Whether pnpm's `shell-emulator` setting is on, so that it runs the script with Yarn's shell */
+  shellEmulator?: boolean;
 }
 
 const ONE_LINE_SUGGESTION = 'Put the command on one line instead.';
@@ -198,14 +193,14 @@ class ScriptAnalyzer {
   readonly #reporter: Reporter;
   readonly #words: WordChecker;
 
-  constructor(length: number, options: AnalyzeScriptOptions) {
+  constructor(length: number, options: AnalyzeScriptOptions, traits: RunnerTraits) {
     this.#reporter = new Reporter(length);
     this.#words = new WordChecker(
       this.#reporter,
       (script, part, context) => {
         this.#walkNestedScript(script, part, context);
       },
-      options,
+      traits,
     );
     this.#redirections = new RedirectionChecker(this.#reporter, this.#words);
     this.#commands = new CommandChecker(this.#reporter, options, (words, context, nested) => {
@@ -958,16 +953,17 @@ export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}
     return [];
   }
 
-  const analyzer = new ScriptAnalyzer(script.length, options);
+  const traits = runnerTraits(options.runner || 'npm', options.shellEmulator || false);
+  const analyzer = new ScriptAnalyzer(script.length, options, traits);
 
   analyzer.analyzeSource({
-    convertsSlashes: options.yarnClassic || false,
+    convertsSlashes: traits.convertsSlashes || false,
     covered: new Set(),
     crossEnv: false,
     fixExclusions: [],
     fixedRange: undefined,
     offset: 0,
-    portable: options.portableShell || false,
+    portable: traits.portableShell || false,
     shell: 'native',
     source: script,
   });

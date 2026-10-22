@@ -50,6 +50,9 @@ const EXIT_STATUSES: ReadonlyMap<string, string> = new Map([
   ['true', '0'],
 ]);
 
+/** Options of pnpm and aube that make the command and its arguments a shell line */
+const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
+
 /**
  * Finds the command that a command runs, e.g. `rm` in `cross-env A=1 rm -rf dist`.
  * @param values The static values of the outer command's arguments
@@ -440,7 +443,7 @@ export class CommandChecker {
       const commandIndex = findCommandIndex(values, start, valueOptions);
       return values
         .slice(start, commandIndex === -1 ? values.length : commandIndex)
-        .some((value) => value === '-c' || value === '--shell-mode')
+        .some((value) => value != null && SHELL_MODE_OPTIONS.has(value))
         ? commandIndex
         : -1;
     };
@@ -507,16 +510,18 @@ export class CommandChecker {
           return undefined;
         }
 
-        const call = callIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
-        if (call !== -1 && (name === 'npm' || name === 'upm')) {
-          nestedShellString(call);
-          return undefined;
-        }
-
-        const shellLine = shellModeIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
-        if (shellLine !== -1 && (name === 'aube' || name === 'pnpm')) {
-          nestedShellLine(shellLine);
-          return undefined;
+        if (name === 'npm' || name === 'upm') {
+          const call = callIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
+          if (call !== -1) {
+            nestedShellString(call);
+            return undefined;
+          }
+        } else if (name === 'aube' || name === 'pnpm') {
+          const shellLine = shellModeIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
+          if (shellLine !== -1) {
+            nestedShellLine(shellLine);
+            return undefined;
+          }
         }
 
         return invoke(findCommandIndex(values, subcommand + 1, EXEC_VALUE_OPTIONS));
