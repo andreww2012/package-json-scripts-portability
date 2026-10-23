@@ -35,6 +35,18 @@ export default eslintConfig({
     markdown: {
       configSentencesPerLine: true,
     },
+    ts: {
+      overrides: {
+        'ts/no-restricted-types': [
+          2,
+          {
+            types: {
+              Omit: 'Use `OmitStrict` from `@andreww2012/unutils/types` instead',
+            },
+          },
+        ],
+      },
+    },
     un: {
       overrides: {
         'un/prefer-array-for-each': 2,

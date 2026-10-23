@@ -1,4 +1,5 @@
 import {arrayIntersection} from '@andreww2012/unutils';
+import {listFormat} from './messages.ts';
 
 export type Platform = 'darwin' | 'linux' | 'win32';
 
@@ -27,9 +28,7 @@ const PLATFORM_NAMES: Readonly<Record<Platform, string>> = {
  * @param platforms The platforms to format
  * @returns The formatted list
  */
-export const formatPlatforms = (platforms: readonly Platform[]) => {
-  const names = arrayIntersection(PLATFORMS, platforms).map((platform) => PLATFORM_NAMES[platform]);
-
-  const last = names.pop() || '';
-  return names.length <= 1 ? [...names, last].join(' and ') : `${names.join(', ')}, and ${last}`;
-};
+export const formatPlatforms = (platforms: readonly Platform[]) =>
+  listFormat.format(
+    arrayIntersection(PLATFORMS, platforms).map((platform) => PLATFORM_NAMES[platform]),
+  );

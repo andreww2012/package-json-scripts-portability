@@ -1,4 +1,5 @@
 import {clamp} from '@andreww2012/unutils';
+import type {OmitStrict} from '@andreww2012/unutils/types';
 import {type Context, type Range, type Shell, type SyntaxKind, rangeInScript} from './context.ts';
 import {
   MACOS_PLATFORMS,
@@ -7,6 +8,7 @@ import {
   type Platform,
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
+import type {Runner} from './runners.ts';
 
 export type ScriptIssueMessageId =
   | 'inconsistentBehavior'
@@ -42,7 +44,20 @@ export interface ScriptIssue {
   platforms: Platform[];
   /** Start offset of the issue in the script */
   pos: number;
+  /** Runners with which the script has the issue */
+  runners: Runner[];
 }
+
+/** An issue that the script has with one runner */
+export type RunnerIssue = OmitStrict<ScriptIssue, 'runners'>;
+
+/**
+ * Gets what identifies an issue, apart from the platforms and the runners that it's found for.
+ * @param issue The issue
+ * @returns A string that is the same for the same issues
+ */
+export const issueKey = (issue: OmitStrict<RunnerIssue, 'fix' | 'platforms'>) =>
+  JSON.stringify([issue.messageId, issue.pos, issue.end, issue.data]);
 
 /** Platforms on which each kind of syntax doesn't work, by the shell that runs it */
 const SYNTAX_PLATFORMS: Readonly<Record<SyntaxKind, Readonly<Record<Shell, readonly Platform[]>>>> =
@@ -54,7 +69,7 @@ const SYNTAX_PLATFORMS: Readonly<Record<SyntaxKind, Readonly<Record<Shell, reado
   };
 
 export class Reporter {
-  readonly issues: ScriptIssue[] = [];
+  readonly issues: RunnerIssue[] = [];
 
   /**
    * Length of the analyzed script, which unbash's positions can exceed, e.g. after a trailing `\\`
@@ -105,9 +120,9 @@ export class Reporter {
 
     if (remaining.length > 0) {
       const range = rangeInScript(context, node);
-      const start = clamp(range.pos, 0, this.#length);
-      const end = clamp(range.end, start, this.#length);
-      const key = JSON.stringify([messageId, start, end, data]);
+      const pos = clamp(range.pos, 0, this.#length);
+      const end = clamp(range.end, pos, this.#length);
+      const key = issueKey({data, end, messageId, pos});
 
       if (!this.#seen.has(key)) {
         this.#seen.add(key);
@@ -117,7 +132,7 @@ export class Reporter {
           fix: this.#mapFix(context, fix),
           messageId,
           platforms: remaining,
-          pos: start,
+          pos,
         });
       }
     }

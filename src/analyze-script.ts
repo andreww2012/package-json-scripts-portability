@@ -1,4 +1,5 @@
-// cspell:ignore wordlist
+// cspell:ignore arrayify wordlist
+import {arrayify} from '@andreww2012/unutils';
 import {
   type AndOr,
   type Command,
@@ -33,8 +34,20 @@ import {
 } from './messages.ts';
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import {RedirectionChecker} from './redirection-checker.ts';
-import {Reporter, type ScriptFix} from './reporter.ts';
-import {type Runner, type RunnerTraits, runnerTraits} from './runners.ts';
+import {
+  Reporter,
+  type RunnerIssue,
+  type ScriptFix,
+  type ScriptIssue,
+  issueKey,
+} from './reporter.ts';
+import {
+  PACKAGE_MANAGER_RUNNERS,
+  type Runner,
+  type RunnerTraits,
+  isRunnerAgnosticScript,
+  runnerTraits,
+} from './runners.ts';
 import {WordChecker} from './word-checker.ts';
 import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE} from './words.ts';
 
@@ -48,13 +61,26 @@ export interface AnalyzeScriptOptions {
   /**
    * What runs the script: a package manager, or `node` for `node --run`.
    * It decides e.g. which shell runs the script and which environment variables it gets.
+   * Several runners report what breaks with any of them.
    * Defaults to `npm`
    */
-  runner?: Runner;
+  runner?: Runner | readonly Runner[];
+
+  /**
+   * Scripts that any package manager may run, which are checked with all of them instead of
+   * `runner`: `true` for all scripts, `false` for none, or whether each script is, by name, on
+   * top of the defaults (`preinstall`, `install`, `postinstall` and `prepare`)
+   */
+  runnerAgnosticScripts?: boolean | Readonly<Record<string, boolean>>;
+
+  /** The script's name in package.json, e.g. `postinstall`, to tell if it's runner-agnostic */
+  scriptName?: string;
 
   /** Whether pnpm's `shell-emulator` setting is on, so that it runs the script with Yarn's shell */
   shellEmulator?: boolean;
 }
+
+const DEFAULT_RUNNERS: readonly Runner[] = ['npm'];
 
 const ONE_LINE_SUGGESTION = 'Put the command on one line instead.';
 
@@ -943,17 +969,14 @@ class ScriptAnalyzer {
 }
 
 /**
- * Analyzes a package.json script for constructs that don't work (the same) on all platforms.
+ * Analyzes a script as a runner runs it.
  * @param script The script's source
  * @param options Analysis options
- * @returns The issues found, with offsets relative to the script
+ * @param runner What runs the script
+ * @returns The issues found with the runner
  */
-export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}) => {
-  if (COMMENT_LINE.test(script)) {
-    return [];
-  }
-
-  const traits = runnerTraits(options.runner || 'npm', options.shellEmulator || false);
+const analyzeWithRunner = (script: string, options: AnalyzeScriptOptions, runner: Runner) => {
+  const traits = runnerTraits(runner, options.shellEmulator || false);
   const analyzer = new ScriptAnalyzer(script.length, options, traits);
 
   analyzer.analyzeSource({
@@ -969,4 +992,59 @@ export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}
   });
 
   return analyzer.issues;
+};
+
+/**
+ * Merges the issues found with each runner, e.g. `rm` with both npm and pnpm.
+ * A merged issue is on the platforms where any of the runners has it, and keeps its fix only if
+ * all of them suggest the same one.
+ * @param issuesByRunner The issues found with each runner
+ * @returns The merged issues
+ */
+const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, readonly RunnerIssue[]>) => {
+  const merged = new Map<string, ScriptIssue>();
+
+  issuesByRunner.forEach((issues, runner) => {
+    issues.forEach((issue) => {
+      const key = issueKey(issue);
+      const existing = merged.get(key);
+
+      if (existing) {
+        existing.platforms = PLATFORMS.filter(
+          (platform) => existing.platforms.includes(platform) || issue.platforms.includes(platform),
+        );
+        existing.runners.push(runner);
+        if (JSON.stringify(existing.fix) !== JSON.stringify(issue.fix)) {
+          existing.fix = undefined;
+        }
+      } else {
+        merged.set(key, {...issue, runners: [runner]});
+      }
+    });
+  });
+
+  return [...merged.values()];
+};
+
+/**
+ * Analyzes a package.json script for constructs that don't work (the same) on all platforms.
+ * @param script The script's source
+ * @param options Analysis options
+ * @returns The issues found, with offsets relative to the script
+ */
+export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}) => {
+  if (COMMENT_LINE.test(script)) {
+    return [];
+  }
+
+  const runners = isRunnerAgnosticScript(options.scriptName, options.runnerAgnosticScripts)
+    ? PACKAGE_MANAGER_RUNNERS
+    : arrayify(options.runner);
+  return mergeIssues(
+    new Map(
+      (runners.length > 0 ? runners : DEFAULT_RUNNERS).map(
+        (runner) => [runner, analyzeWithRunner(script, options, runner)] as const,
+      ),
+    ),
+  );
 };

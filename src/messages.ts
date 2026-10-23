@@ -17,6 +17,9 @@ export const SHELL_SCRIPT_SUGGESTION =
   'Shell scripts require a POSIX shell; use a Node.js script instead.';
 export const VARIABLE_SUGGESTION = 'Use `cross-env` or a Node.js script instead.';
 
+/** Joins names for people, e.g. "macOS, Linux, and Windows" */
+export const listFormat = new Intl.ListFormat('en');
+
 /** Maximum length of script text in a report message */
 const MAX_SNIPPET_CHARACTERS = 40;
 const WHITESPACE = /\s+/g;

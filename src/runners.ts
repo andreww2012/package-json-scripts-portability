@@ -1,17 +1,58 @@
-import {allUnionMembers, setHas} from '@andreww2012/unutils';
+import {allUnionMembers, arrayIntersection, setHas} from '@andreww2012/unutils';
+import {listFormat} from './messages.ts';
 
 /** What can run the scripts: a package manager, or `node` for `node --run` */
-export type Runner = 'aube' | 'node' | 'npm' | 'pnpm' | 'upm' | 'yarn' | 'yarn-classic';
+export type Runner = 'aube' | 'node' | 'npm' | 'pnpm' | 'pnpm-10' | 'upm' | 'yarn' | 'yarn-classic';
 
 export const RUNNERS: readonly Runner[] = allUnionMembers<Runner, {readonly: true}>()([
   'aube',
   'node',
   'npm',
   'pnpm',
+  'pnpm-10',
   'upm',
   'yarn',
   'yarn-classic',
 ]);
+
+/** Runners that are package managers: all of them but `node`, which doesn't install packages */
+export const PACKAGE_MANAGER_RUNNERS: readonly Runner[] = RUNNERS.filter(
+  (runner) => runner !== 'node',
+);
+
+/**
+ * Scripts that run with any package manager by default, as they run on the machine of whoever
+ * installs the package: install scripts, and `prepare`, which runs when it's installed from git
+ */
+export const RUNNER_AGNOSTIC_SCRIPTS: ReadonlySet<string> = new Set([
+  'install',
+  'postinstall',
+  'preinstall',
+  'prepare',
+]);
+
+/**
+ * Checks whether any package manager may run a script.
+ * @param scriptName The script's name in package.json
+ * @param scripts `true` for all scripts, `false` for none, or whether each script is, on top of
+ * the defaults
+ * @returns Whether the script is runner-agnostic
+ */
+export const isRunnerAgnosticScript = (
+  scriptName: string | undefined,
+  scripts: boolean | Readonly<Record<string, boolean>> = {},
+) => {
+  if (typeof scripts === 'boolean') {
+    return scripts;
+  }
+  if (scriptName == null) {
+    return false;
+  }
+  // Not `scripts[scriptName] ?? ...`: names like `constructor` are inherited properties
+  return Object.hasOwn(scripts, scriptName)
+    ? scripts[scriptName] === true
+    : RUNNER_AGNOSTIC_SCRIPTS.has(scriptName);
+};
 
 /** How a runner runs the scripts */
 export interface RunnerTraits {
@@ -47,6 +88,11 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
   pnpm: {
     label: 'pnpm',
   },
+  // pnpm v10 and older, whose config defaults set `HOME`
+  'pnpm-10': {
+    label: 'pnpm v10',
+    setsHome: true,
+  },
   upm: {
     label: 'upm',
     packageManagerVariables: new Set([
@@ -68,26 +114,33 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
   },
 };
 
-/** Runners that package managers of the same name are, i.e. all of them but Yarn */
-const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'pnpm', 'upm']);
+/** Runners that package managers of the same name are, i.e. all of them but pnpm and Yarn */
+const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'upm']);
 
 /** The first number of a version or a version range, e.g. `1` in `^1.22.0` */
 const MAJOR_VERSION = /\d+/;
+/** A version range without an upper bound, e.g. `>=10`, which includes later major versions */
+const UNBOUNDED_RANGE = /^\s*>/;
 
 /**
  * Gets the runner for a package manager, e.g. the one in the `packageManager` or
  * `devEngines.packageManager` field of package.json.
  * @param name Name of the package manager, e.g. `yarn`
- * @param version Its version or version range, which tells Yarn v1 from Yarn v2+, e.g. `1.22.22`
+ * @param version Its version or version range, which tells Yarn v1 from Yarn v2+, and pnpm v10
+ * from later versions, e.g. `1.22.22`
  * @returns The runner, or `undefined` if it's an unknown package manager or Yarn of an unknown
  * version
  */
 export const getRunner = (name: string, version = '') => {
+  const major = Number(MAJOR_VERSION.exec(version)?.[0]);
+
+  if (name === 'pnpm') {
+    // Unknown versions and ranges like `>=10` may be pnpm v11+, which doesn't set `HOME`
+    return major <= 10 && !UNBOUNDED_RANGE.test(version) ? 'pnpm-10' : 'pnpm';
+  }
   if (name !== 'yarn') {
     return setHas(SAME_NAME_RUNNERS, name) ? name : undefined;
   }
-
-  const major = Number(MAJOR_VERSION.exec(version)?.[0]);
   if (major === 1) {
     return 'yarn-classic';
   }
@@ -102,9 +155,19 @@ export const getRunner = (name: string, version = '') => {
  */
 export const runnerTraits = (runner: Runner, isShellEmulated: boolean) =>
   // pnpm runs the scripts with Yarn's portable shell then
-  runner === 'pnpm' && isShellEmulated
+  isShellEmulated && (runner === 'pnpm' || runner === 'pnpm-10')
     ? {
-        ...RUNNER_TRAITS.pnpm,
+        ...RUNNER_TRAITS[runner],
         portableShell: true,
       }
     : RUNNER_TRAITS[runner];
+
+/**
+ * Formats runners as a list for people, e.g. "pnpm and Yarn v1".
+ * @param runners The runners to format
+ * @returns The formatted list
+ */
+export const formatRunners = (runners: readonly Runner[]) =>
+  listFormat.format(
+    arrayIntersection(RUNNERS, runners).map((runner) => RUNNER_TRAITS[runner].label),
+  );

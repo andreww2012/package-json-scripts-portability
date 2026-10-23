@@ -32,6 +32,21 @@ const summarizeFixes = (script: string, options?: AnalyzeScriptOptions): FixSumm
       fix ? [[script.slice(pos, end), fix.description, applyFix(script, fix)]] : [],
     );
 
+/**
+ * Summarizes the issues found in a script with some runners as `[messageId, reported text,
+ * platforms, runners]` tuples.
+ * @param script Script source to analyze
+ * @param runner The runners to analyze it with
+ * @returns A compact representation of each issue
+ */
+const summarizeRunners = (script: string, runner: AnalyzeScriptOptions['runner']) =>
+  analyzeScript(script, {runner}).map(({end, messageId, platforms, pos, runners}) => [
+    messageId,
+    script.slice(pos, end),
+    platforms.join(','),
+    runners.join(','),
+  ]);
+
 const nodeRun: AnalyzeScriptOptions = {runner: 'node'};
 const yarn: AnalyzeScriptOptions = {runner: 'yarn'};
 const yarnClassic: AnalyzeScriptOptions = {runner: 'yarn-classic'};
@@ -1253,6 +1268,12 @@ describe('analyzeScript', () => {
       },
     );
 
+    it("doesn't report `HOME` when pnpm v10 runs the script, which sets it", () => {
+      expect(
+        summarize('cross-env CONFIG=${HOME}/.config node x.js', {runner: 'pnpm-10'}),
+      ).toStrictEqual([]);
+    });
+
     it("doesn't report them in Yarn's shell, which expands variables itself", () => {
       expect(summarize('cross-env NODE_PATH=$PWD/src jest', yarn)).toStrictEqual([]);
     });
@@ -1350,11 +1371,12 @@ describe('analyzeScript', () => {
   });
 
   describe('runners', () => {
-    it("checks the scripts in Yarn's shell when pnpm's `shell-emulator` is on", () => {
-      expect(
-        summarize('npm run a & npm run b', {runner: 'pnpm', shellEmulator: true}),
-      ).toStrictEqual([]);
-    });
+    it.each<Runner>(['pnpm', 'pnpm-10'])(
+      "checks the scripts in Yarn's shell when %s's `shell-emulator` is on",
+      (runner) => {
+        expect(summarize('npm run a & npm run b', {runner, shellEmulator: true})).toStrictEqual([]);
+      },
+    );
 
     it('ignores `shellEmulator` for other runners', () => {
       expect(
@@ -1362,7 +1384,7 @@ describe('analyzeScript', () => {
       ).toStrictEqual([['inconsistentBehavior', '&', 'win32']]);
     });
 
-    it.each<Runner>(['aube', 'npm', 'pnpm', 'upm'])(
+    it.each<Runner>(['aube', 'npm', 'pnpm', 'pnpm-10', 'upm'])(
       'checks the scripts like npm runs them with %s',
       (runner) => {
         expect(summarize('rm -rf dist; echo $npm_package_version', {runner})).toStrictEqual(
@@ -1372,7 +1394,100 @@ describe('analyzeScript', () => {
     );
   });
 
-  // Checked on GitHub's Windows runners with npm, pnpm and Yarn v1
+  describe('several runners', () => {
+    it.each<[string, Runner[], string[][]]>([
+      // The same issue with several runners is reported once
+      ['rm -rf dist', ['npm', 'yarn'], [['unsupportedCommand', 'rm', 'win32', 'npm,yarn']]],
+      // Yarn's shell supports it
+      [
+        'NODE_ENV=production node x',
+        ['npm', 'yarn'],
+        [['unsupportedSyntax', 'NODE_ENV=production', 'win32', 'npm']],
+      ],
+      // Yarn's shell can't run cmd.exe's builtins on Windows either
+      [
+        'del dist',
+        ['npm', 'yarn'],
+        [['unsupportedCommand', 'del', 'darwin,linux,win32', 'npm,yarn']],
+      ],
+      // Of these, only npm sets `HOME`
+      [
+        'cross-env CONFIG=${HOME}/.config node x.js',
+        ['npm', 'pnpm', 'yarn-classic'],
+        [['inconsistentBehavior', '${HOME}', 'win32', 'pnpm,yarn-classic']],
+      ],
+      // The reasons differ
+      [
+        'cross-env CLI=$npm_execpath node x.js',
+        ['node', 'npm', 'upm'],
+        [
+          ['inconsistentBehavior', '$npm_execpath', 'darwin,linux,win32', 'node'],
+          ['inconsistentBehavior', '$npm_execpath', 'darwin,linux,win32', 'upm'],
+        ],
+      ],
+      ['rm -rf dist', ['npm', 'npm'], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
+      ['rm -rf dist', [], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
+    ])('%j with %j', (script, runner, expected) => {
+      expect(summarizeRunners(script, runner)).toStrictEqual(expected);
+    });
+
+    it('keeps a fix that all runners suggest', () => {
+      expect(analyzeScript('rm -rf dist', {runner: ['npm', 'yarn']})[0]?.fix?.description).toBe(
+        'Replace `rm -rf` with `rimraf`.',
+      );
+    });
+  });
+
+  describe('runner-agnostic scripts', () => {
+    // Only npm and pnpm v10 set `HOME`
+    const SCRIPT = 'cross-env CONFIG=${HOME}/.config node x.js';
+    const HOME_ISSUE = ['inconsistentBehavior', '${HOME}', 'win32', 'aube,pnpm,upm,yarn-classic'];
+
+    it.each<[string, AnalyzeScriptOptions, string[][]]>([
+      ['install scripts', {scriptName: 'postinstall'}, [HOME_ISSUE]],
+      ['`prepare`', {scriptName: 'prepare'}, [HOME_ISSUE]],
+      ['other scripts', {scriptName: 'build'}, []],
+      ['no script with `false`', {runnerAgnosticScripts: false, scriptName: 'postinstall'}, []],
+      ['all scripts with `true`', {runnerAgnosticScripts: true, scriptName: 'build'}, [HOME_ISSUE]],
+      [
+        'scripts set to `true`',
+        {runnerAgnosticScripts: {release: true}, scriptName: 'release'},
+        [HOME_ISSUE],
+      ],
+      [
+        'no scripts set to `false`',
+        {runnerAgnosticScripts: {prepare: false}, scriptName: 'prepare'},
+        [],
+      ],
+      [
+        'the other defaults',
+        {runnerAgnosticScripts: {prepare: false}, scriptName: 'postinstall'},
+        [HOME_ISSUE],
+      ],
+      ['no inherited properties', {runnerAgnosticScripts: {}, scriptName: 'constructor'}, []],
+    ])('checks %s with all package managers', (_, options, expected) => {
+      expect(
+        analyzeScript(SCRIPT, {...options, runner: 'npm'}).map(
+          ({end, messageId, platforms, pos, runners}) => [
+            messageId,
+            SCRIPT.slice(pos, end),
+            platforms.join(','),
+            runners.join(','),
+          ],
+        ),
+      ).toStrictEqual(expected);
+    });
+
+    it("doesn't check them with `node --run`, which doesn't install packages", () => {
+      expect(
+        analyzeScript('cross-env CLI=$npm_execpath node x.js', {scriptName: 'postinstall'}).map(
+          (issue) => issue.runners,
+        ),
+      ).toStrictEqual([['upm']]);
+    });
+  });
+
+  // Checked on GitHub's Windows runners with npm, pnpm v10 and Yarn v1
   describe('line breaks', () => {
     it.each<[string, Summary[]]>([
       // cmd.exe only runs the first line, even in quotes, and fails on an incomplete one
@@ -1451,7 +1566,7 @@ describe('analyzeScript', () => {
     });
   });
 
-  // Checked on GitHub's Windows runners with npm, pnpm and Yarn v1
+  // Checked on GitHub's Windows runners with npm, pnpm v10 and Yarn v1
   describe('command paths', () => {
     it.each<[string, Summary[]]>([
       // cross-env's cross-spawn normalizes the path and reads the file's shebang
@@ -2010,6 +2125,7 @@ describe('analyzeScript', () => {
         messageId: 'unsupportedCommand',
         platforms: ['win32'],
         pos: 0,
+        runners: ['npm'],
       },
     ]);
   });
