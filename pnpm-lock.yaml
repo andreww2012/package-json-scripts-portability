@@ -176,8 +176,8 @@ importers:
         version: 6.0.1
     devDependencies:
       '@andreww2012/npm-check-updates-config':
-        specifier: 0.1.0
-        version: 0.1.0(npm-check-updates@23.1.1)
+        specifier: 0.1.1
+        version: 0.1.1(npm-check-updates@23.1.1)
       '@antfu/ni':
         specifier: 30.6.0
         version: 30.6.0
@@ -280,8 +280,8 @@ packages:
   '@andrewbranch/untar.js@1.0.4':
     resolution: {integrity: sha512-pVXSwPsLuw8IGLo2Di0EaOfsk+ntVvpkk942J/sHYIkwvtKUakEcPh7HBgZ6tuimgzKSEHgCvO4XgQ05DEbwDw==}
 
-  '@andreww2012/npm-check-updates-config@0.1.0':
-    resolution: {integrity: sha512-aMUlavNlRpuZcrYQAy7HIX20UQ7ucsZRh+uAw0Vp+CfSXM+QMuvDWteTjyfHUGyR6m0ObwekIgeH0K2uIHRfRg==}
+  '@andreww2012/npm-check-updates-config@0.1.1':
+    resolution: {integrity: sha512-zeb37qXJQQyeLZ+Cm/4M/JsXmVH4FOwVBmZ0AJCg67LQKANonAnU0hpL/7TEJcxYdnR9aUtIMYTKnUCJBFwcdA==}
     engines: {node: ^22.23.1 || ^24.18.0 || >=26.4.0}
     peerDependencies:
       npm-check-updates: '>=19.0.0'
@@ -5518,7 +5518,7 @@ snapshots:
 
   '@andrewbranch/untar.js@1.0.4': {}
 
-  '@andreww2012/npm-check-updates-config@0.1.0(npm-check-updates@23.1.1)':
+  '@andreww2012/npm-check-updates-config@0.1.1(npm-check-updates@23.1.1)':
     dependencies:
       verkit: 0.5.0
       yaml: 2.9.1
