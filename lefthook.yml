@@ -8,16 +8,34 @@ pre-push:
     cspell:
       run: pnpm exec cspell --exclude '**/.*' --no-must-find-files {push_files}
     knip:
-      run: nr knip
+      run: pnpm run knip
     types:
-      run: nr ts
+      run: pnpm run ts
 
-post-merge: &install-on-lockfile-change
+post-checkout:
+  skip:
+    - rebase # Installing here is too early: this hook runs before the commits are applied
   commands:
     install:
-      glob: '{pnpm-lock.yaml,pnpm-workspace.yaml,patches/*}'
-      run: ni
-post-checkout: *install-on-lockfile-change
+      # This diff replaces `glob`, as lefthook doesn't pass the hook arguments to a `files` command
+      # When the diff fails, for example in a new worktree, the install runs too
+      run: >-
+        git diff --quiet {1} {2} -- pnpm-lock.yaml pnpm-workspace.yaml patches 2>/dev/null ||
+        pnpm install
+post-merge:
+  commands:
+    install:
+      files: git diff --name-only ORIG_HEAD HEAD
+      glob: &dependency-files '{pnpm-lock.yaml,pnpm-workspace.yaml,patches/*}'
+      run: pnpm install
+# Git runs this hook after `git commit --amend` and `git rebase`, with `amend` or `rebase` as `{1}`
+post-rewrite:
+  commands:
+    install:
+      files: git diff --name-only ORIG_HEAD HEAD
+      glob: *dependency-files
+      # Amending a commit doesn't change the files on disk, so only rebases need the install
+      run: 'if [ {1} = rebase ]; then pnpm install; fi'
 
 pre-commit:
   parallel: true

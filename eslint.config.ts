@@ -36,6 +36,9 @@ export default eslintConfig({
     markdown: {
       configSentencesPerLine: true,
     },
+    nodeDependencies: {
+      enforceAbsoluteVersion: true,
+    },
     ts: {
       overrides: {
         'ts/no-restricted-types': [
