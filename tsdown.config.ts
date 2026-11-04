@@ -5,6 +5,6 @@ export default defineConfig({
   dts: true,
   exports: true,
   deps: {
-    onlyBundle: ['@andreww2012/unutils'],
+    onlyBundle: ['utilery'],
   },
 });

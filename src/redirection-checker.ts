@@ -1,4 +1,3 @@
-import {mapGetOrInsert} from '@andreww2012/unutils';
 import type {Command, Redirection} from 'unbash';
 import {type Context, bashLabel} from './context.ts';
 import {removal, replacement} from './fixes.ts';
@@ -10,6 +9,7 @@ import {
 } from './messages.ts';
 import {POSIX_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
+import {mapGetOrInsert} from './utils.ts';
 import type {WordChecker} from './word-checker.ts';
 import {POSIX_PATH, WHITESPACE, staticValue} from './words.ts';
 

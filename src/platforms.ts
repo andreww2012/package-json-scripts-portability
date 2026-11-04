@@ -1,5 +1,5 @@
-import {arrayIntersection} from '@andreww2012/unutils';
 import {listFormat} from './messages.ts';
+import {arrayIntersection} from './utils.ts';
 
 export type Platform = 'darwin' | 'linux' | 'win32';
 

@@ -1,5 +1,5 @@
-import {allUnionMembers, arrayIntersection, setHas} from '@andreww2012/unutils';
 import {listFormat} from './messages.ts';
+import {allUnionMembers, arrayIntersection, setHas} from './utils.ts';
 
 /** What can run the scripts: a package manager, or `node` for `node --run` */
 export type Runner = 'aube' | 'node' | 'npm' | 'pnpm' | 'pnpm-10' | 'upm' | 'yarn' | 'yarn-classic';

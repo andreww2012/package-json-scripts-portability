@@ -17,6 +17,7 @@ import {
   type Platform,
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
+import type {ReadonlyDeep} from './utils.ts';
 
 interface CommandInfo {
   /** Whether the command is a Bash builtin, i.e. it's available when the script runs in Bash */
@@ -448,8 +449,8 @@ export const OS_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /** Package manager subcommands that run the command given as their arguments */
-export const EXEC_SUBCOMMANDS: Readonly<
-  Record<'aube' | 'bun' | 'npm' | 'pnpm' | 'upm' | 'yarn', readonly string[]>
+export const EXEC_SUBCOMMANDS: ReadonlyDeep<
+  Record<'aube' | 'bun' | 'npm' | 'pnpm' | 'upm' | 'yarn', string[]>
 > = {
   aube: ['dlx', 'exec'],
   bun: ['x'],

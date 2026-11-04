@@ -1,7 +1,8 @@
 import type {CSpellSettings} from 'cspell';
 
 const GLOBALLY_IGNORED_WORDS: Readonly<Record<string, string[]>> = {
-  names: ['andreww', 'unbash', 'unutils'],
+  names: ['andreww', 'unbash', 'utilery'],
+  utilities: ['arrayify'],
   englishIshWords: ['redirections', 'subshell', 'unmappable'],
   // Commands that the analyzer knows, and their options
   commands: ['aubx', 'bunx', 'fuser', 'nohup', 'regextype', 'xcopy'],

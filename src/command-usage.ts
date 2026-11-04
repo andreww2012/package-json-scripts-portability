@@ -15,6 +15,7 @@ import {
   type Platform,
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
+import {substringBefore} from './utils.ts';
 import {ASSIGNMENT, isShortOptionCluster} from './words.ts';
 
 interface CommandArgument {
@@ -168,7 +169,7 @@ export const checkCommandUsage = (
       report(index, MACOS_PLATFORMS, {
         reason: `BSD \`${name}\` doesn't support GNU-style long options`,
         suggestion: 'Use short options instead.',
-        usage: `${name} ${values[index]?.split('=', 1)[0] || ''}`,
+        usage: `${name} ${substringBefore(values[index] || '', '=')}`,
       });
     }
   }

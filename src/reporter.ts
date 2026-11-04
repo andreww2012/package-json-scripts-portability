@@ -1,5 +1,3 @@
-import {clamp} from '@andreww2012/unutils';
-import type {OmitStrict} from '@andreww2012/unutils/types';
 import {type Context, type Range, type Shell, type SyntaxKind, rangeInScript} from './context.ts';
 import {
   MACOS_PLATFORMS,
@@ -9,6 +7,7 @@ import {
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
 import type {Runner} from './runners.ts';
+import {type OmitStrict, type ReadonlyDeep, clamp} from './utils.ts';
 
 export type ScriptIssueMessageId =
   | 'inconsistentBehavior'
@@ -60,13 +59,12 @@ export const issueKey = (issue: OmitStrict<RunnerIssue, 'fix' | 'platforms'>) =>
   JSON.stringify([issue.messageId, issue.pos, issue.end, issue.data]);
 
 /** Platforms on which each kind of syntax doesn't work, by the shell that runs it */
-const SYNTAX_PLATFORMS: Readonly<Record<SyntaxKind, Readonly<Record<Shell, readonly Platform[]>>>> =
-  {
-    bash: {bash: [], native: NOT_LINUX_OR_WINDOWS, sh: NOT_LINUX_OR_WINDOWS},
-    bash4: {bash: MACOS_PLATFORMS, native: PLATFORMS, sh: PLATFORMS},
-    bashNonPosix: {bash: [], native: PLATFORMS, sh: PLATFORMS},
-    posix: {bash: [], native: WINDOWS_PLATFORMS, sh: []},
-  };
+const SYNTAX_PLATFORMS: ReadonlyDeep<Record<SyntaxKind, Record<Shell, Platform[]>>> = {
+  bash: {bash: [], native: NOT_LINUX_OR_WINDOWS, sh: NOT_LINUX_OR_WINDOWS},
+  bash4: {bash: MACOS_PLATFORMS, native: PLATFORMS, sh: PLATFORMS},
+  bashNonPosix: {bash: [], native: PLATFORMS, sh: PLATFORMS},
+  posix: {bash: [], native: WINDOWS_PLATFORMS, sh: []},
+};
 
 export class Reporter {
   readonly issues: RunnerIssue[] = [];

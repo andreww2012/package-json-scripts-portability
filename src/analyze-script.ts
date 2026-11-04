@@ -1,5 +1,4 @@
-// cspell:ignore arrayify wordlist
-import {arrayify} from '@andreww2012/unutils';
+// cspell:ignore wordlist
 import {
   type AndOr,
   type Command,
@@ -48,6 +47,14 @@ import {
   isRunnerAgnosticScript,
   runnerTraits,
 } from './runners.ts';
+import {
+  type MaybeReadonlyArray,
+  arrayIntersection,
+  arrayIsSubset,
+  arrayify,
+  isEqual,
+  substringBefore,
+} from './utils.ts';
 import {WordChecker} from './word-checker.ts';
 import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE} from './words.ts';
 
@@ -64,7 +71,7 @@ export interface AnalyzeScriptOptions {
    * Several runners report what breaks with any of them.
    * Defaults to `npm`
    */
-  runner?: Runner | readonly Runner[];
+  runner?: MaybeReadonlyArray<Runner>;
 
   /**
    * Scripts that any package manager may run, which are checked with all of them instead of
@@ -853,7 +860,7 @@ class ScriptAnalyzer {
 
   #reportStatement(context: Context, node: Range, keyword: string, kind: SyntaxKind) {
     // e.g. `for` in `for (( ... ))`
-    const [firstWord = keyword] = keyword.split(' ', 1);
+    const firstWord = substringBefore(keyword, ' ');
     const covered = this.#reporter.reportSyntax(
       context,
       {end: node.pos + firstWord.length, pos: node.pos},
@@ -924,8 +931,7 @@ class ScriptAnalyzer {
       .slice(firstIssue)
       .some(
         ({platforms}) =>
-          platforms.length === POSIX_PLATFORMS.length &&
-          POSIX_PLATFORMS.every((platform) => platforms.includes(platform)),
+          platforms.length === POSIX_PLATFORMS.length && arrayIsSubset(platforms, POSIX_PLATFORMS),
       );
     if (!isForWindows) {
       backgroundOperators.forEach((range) => {
@@ -1010,11 +1016,12 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, readonly RunnerIssue[]>
       const existing = merged.get(key);
 
       if (existing) {
-        existing.platforms = PLATFORMS.filter(
-          (platform) => existing.platforms.includes(platform) || issue.platforms.includes(platform),
-        );
+        existing.platforms = arrayIntersection(PLATFORMS, [
+          ...existing.platforms,
+          ...issue.platforms,
+        ]);
         existing.runners.push(runner);
-        if (JSON.stringify(existing.fix) !== JSON.stringify(issue.fix)) {
+        if (!isEqual(existing.fix, issue.fix)) {
           existing.fix = undefined;
         }
       } else {

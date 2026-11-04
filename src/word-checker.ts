@@ -1,4 +1,3 @@
-import {toForwardSlashes} from '@andreww2012/unutils';
 import type {
   ArithmeticExpression,
   Assignment,
@@ -27,6 +26,7 @@ import {
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {RunnerTraits} from './runners.ts';
+import {substringAfterLast, toForwardSlashes} from './utils.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
   GLOB_PART_TYPES,
@@ -754,7 +754,7 @@ export class WordChecker {
 
     const isPattern = options.command != null && PATTERN_COMMANDS.has(options.command);
     const unquoted = text.replaceAll('"', '');
-    const path = unquoted.slice(unquoted.lastIndexOf('=') + 1);
+    const path = substringAfterLast(unquoted, '=');
 
     // Require a hint that it's a path (relative prefix, extension, or multiple separators), as
     // backslashes are also used for escapes
@@ -784,7 +784,7 @@ export class WordChecker {
           : replacement(
               word,
               text,
-              `${text.slice(0, text.lastIndexOf('=') + 1)}${toForwardSlashes(text.slice(text.lastIndexOf('=') + 1))}`,
+              `${text.slice(0, text.lastIndexOf('=') + 1)}${toForwardSlashes(substringAfterLast(text, '='))}`,
             ),
       );
     }

@@ -1,4 +1,5 @@
 import {eslintConfig} from 'eslint-config-un';
+import {forbidImportingFromUtilityLibraries} from 'eslint-config-un/snippets';
 import oxfmtConfig from './oxfmt.config.ts';
 
 export default eslintConfig({
@@ -23,7 +24,7 @@ export default eslintConfig({
       requireModuleExtensions: true,
       extraneousDependenciesCheck: {
         // Bundled
-        whitelist: ['@andreww2012/unutils'],
+        whitelist: ['utilery'],
       },
     },
     js: {
@@ -41,7 +42,7 @@ export default eslintConfig({
           2,
           {
             types: {
-              Omit: 'Use `OmitStrict` from `@andreww2012/unutils/types` instead',
+              Omit: 'Use `OmitStrict` from `src/utils.ts` instead',
             },
           },
         ],
@@ -63,5 +64,25 @@ export default eslintConfig({
     // False positives:
     zod: false,
   },
-  extraConfigs: [],
+  extraConfigs: [
+    {
+      name: 'forbid-utility-package-imports',
+      ignores: ['src/utils.ts'],
+      rules: {
+        'no-restricted-imports': [
+          2,
+          {
+            patterns: [
+              forbidImportingFromUtilityLibraries({
+                packageNames: {
+                  utilery: true,
+                },
+                message: 'Import utilities from `src/utils.ts` instead',
+              }),
+            ],
+          },
+        ],
+      },
+    },
+  ],
 });

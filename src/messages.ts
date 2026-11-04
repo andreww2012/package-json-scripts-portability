@@ -1,4 +1,4 @@
-import {truncate as truncateText} from '@andreww2012/unutils';
+import {truncate as truncateText} from './utils.ts';
 
 // Suggestions that several reports share
 export const BASH_4_SUGGESTION =
