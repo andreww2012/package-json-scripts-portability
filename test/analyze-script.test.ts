@@ -25,7 +25,7 @@ const summarize = (script: string, options?: AnalyzeScriptOptions): Summary[] =>
  * @param options Options for the analysis
  * @returns A compact representation of each fix
  */
-const summarizeFixes = (script: string, options?: AnalyzeScriptOptions): FixSummary[] =>
+const summarizeFixes = (script: string, options?: AnalyzeScriptOptions) =>
   analyzeScript(script, options)
     .toSorted((left, right) => left.pos - right.pos)
     .flatMap(({end, fix, pos}): FixSummary[] =>
@@ -871,7 +871,7 @@ describe('analyzeScript', () => {
           ['unsupportedSyntax', '$HOME', 'win32'],
         ],
       ],
-      // Escapes make positions unmappable, so the whole argument is reported
+      // With escapes, positions can't be mapped, so the whole argument is reported
       [
         String.raw`concurrently "echo \"x\" && rm y"`,
         [['unsupportedCommand', String.raw`"echo \"x\" && rm y"`, 'win32']],
@@ -1191,7 +1191,7 @@ describe('analyzeScript', () => {
     });
   });
 
-  describe('more hand-checked regressions', () => {
+  describe('hand-checked regressions', () => {
     it.each<[string, Summary[]]>([
       // Backslashes escaping dots are a regex, not a Windows path
       [String.raw`jest --testPathIgnorePatterns=logging\.spec\.ts`, []],
@@ -1996,7 +1996,7 @@ describe('analyzeScript', () => {
     });
   });
 
-  describe('code review regressions', () => {
+  describe('other regressions', () => {
     it.each<[string, Summary[]]>([
       // Alternatives that together work on all platforms
       ['open x || xdg-open x || start x', []],

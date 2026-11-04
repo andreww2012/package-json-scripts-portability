@@ -302,7 +302,8 @@ class ScriptAnalyzer {
       offset = context.offset + part.pos + 1;
       exclusion = part.type === 'SingleQuoted' ? SINGLE_QUOTE : DOUBLE_QUOTED_SPECIAL_CHARACTERS;
     } else if (words.length > 1 || parts.length > 0 || word.text !== sources[0]) {
-      // Escapes, quotes or joined words make positions in the nested script unmappable
+      // With escapes, quotes or joined words, positions in the nested script can't be mapped to
+      // the analyzed script
       fixedRange ||= rangeInScript(context, {
         end: words.at(-1)?.end || word.end,
         pos: word.pos,
