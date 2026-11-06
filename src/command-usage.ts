@@ -436,8 +436,9 @@ export const checkCommandUsage = (
       const findEscape = (value: string | undefined) =>
         value == null || value.startsWith('-')
           ? undefined
-          : (GNU_SED_ESCAPE.exec(value) ||
-              (isExtended ? null : GNU_SED_BASIC_ESCAPE.exec(value)))?.[0];
+          : (
+              GNU_SED_ESCAPE.exec(value) || (isExtended ? null : GNU_SED_BASIC_ESCAPE.exec(value))
+            )?.[0];
       const escapeIndex = values.findIndex((value) => findEscape(value) != null);
       if (escapeIndex !== -1) {
         report(escapeIndex, MACOS_PLATFORMS, {
