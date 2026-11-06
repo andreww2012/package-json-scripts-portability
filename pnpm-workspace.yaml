@@ -1,3 +1,7 @@
+# Makes Changesets name git tags `<package-name>@<version>` instead of `v<version>`
+packages:
+  - ./
+
 saveExact: true
 autoDedupe: true
 saveTypes: true
