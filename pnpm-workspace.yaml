@@ -10,6 +10,7 @@ lockfile:
   includeResolutionSettings: true
 
 minimumReleaseAge: 960 # 16 hours in minutes
+minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list instead of prompting or failing
 minimumReleaseAgeExclude: []
 minimumReleaseAgeExcludePrune: true
 
