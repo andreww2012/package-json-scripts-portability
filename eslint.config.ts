@@ -38,6 +38,10 @@ export default eslintConfig({
     },
     nodeDependencies: {
       enforceAbsoluteVersion: true,
+      overrides: {
+        // `engines` is for the package's users, who don't install dev dependencies
+        'node-dependencies/compat-engines': [1, {devDependencies: false}],
+      },
     },
     ts: {
       overrides: {
