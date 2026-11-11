@@ -7,18 +7,21 @@ export default eslintConfig({
   mode: 'lib',
   defaultConfigsStatus: 'misc-enabled',
   configs: {
+    eslintComments: {
+      requireDescriptions: true,
+    },
     format: {
-      // Only Markdown code blocks, other files are formatted by the formatter itself
       files: [],
-      configFencedCodeBlocks: true,
-      formatter: [
-        'oxfmt',
-        {
-          bracketSpacing: oxfmtConfig.bracketSpacing,
-          printWidth: oxfmtConfig.printWidth,
-          singleQuote: oxfmtConfig.singleQuote,
-        },
-      ],
+      configFencedCodeBlocks: {
+        formatter: [
+          'oxfmt',
+          {
+            bracketSpacing: oxfmtConfig.bracketSpacing,
+            printWidth: oxfmtConfig.printWidth,
+            singleQuote: oxfmtConfig.singleQuote,
+          },
+        ],
+      },
     },
     import: {
       requireModuleExtensions: true,
@@ -39,8 +42,10 @@ export default eslintConfig({
     nodeDependencies: {
       enforceAbsoluteVersion: true,
       overrides: {
-        // `engines` is for the package's users, who don't install dev dependencies
-        'node-dependencies/compat-engines': [1, {devDependencies: false}],
+        'node-dependencies/compat-engines': (severity, options) => ({
+          severity,
+          options: [{...options?.[0], devDependencies: false}],
+        }),
       },
     },
     ts: {
@@ -57,7 +62,9 @@ export default eslintConfig({
     },
     un: {
       overrides: {
+        'un/no-type-assertion': 2,
         'un/prefer-array-for-each': 2,
+        'un/prefer-logical-or': 2,
       },
     },
     unicorn: {
@@ -67,9 +74,9 @@ export default eslintConfig({
         'unicorn/no-useless-undefined': 0,
       },
     },
-
-    // False positives:
-    zod: false,
+    vitest: {
+      vitestGlobalsImporting: 'disallow',
+    },
   },
   extraConfigs: [
     {
