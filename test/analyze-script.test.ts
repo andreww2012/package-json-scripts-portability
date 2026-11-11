@@ -1077,6 +1077,14 @@ describe('analyzeScript', () => {
       ],
       ['pnpx -c "rm x"', [['unsupportedCommand', 'rm', 'win32']]],
       ['command -v rm', [['unsupportedCommand', 'command', 'win32']]],
+      // `-v` of the command that it runs
+      [
+        'command grep -v -P x f',
+        [
+          ['unsupportedCommand', 'command', 'win32'],
+          ['unsupportedUsage', 'grep -v -P', 'darwin'],
+        ],
+      ],
       [
         'command open x',
         [

@@ -555,10 +555,15 @@ export class CommandChecker {
       }
     }
 
+    if (!valueOptions) {
+      return undefined;
+    }
+
+    const commandIndex = findCommandIndex(values, 0, valueOptions, name === 'env');
     // `command -v` looks a command up instead of running it
-    return !valueOptions ||
-      (name === 'command' && values.some((value) => value === '-v' || value === '-V'))
+    return name === 'command' &&
+      values.slice(0, commandIndex).some((value) => value === '-v' || value === '-V')
       ? undefined
-      : invoke(findCommandIndex(values, 0, valueOptions, name === 'env'));
+      : invoke(commandIndex);
   }
 }
