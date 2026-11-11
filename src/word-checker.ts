@@ -100,9 +100,9 @@ const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
 /** Characters that cmd.exe splits words at or interprets */
 const CMD_SPECIAL_CHARACTERS = /[\s"%&<>^|]/;
 /** Backslash escapes that POSIX shells remove, but cmd.exe passes on, e.g. `\$` or `\ ` */
-const UNQUOTED_ESCAPE = /\\[\t !#$&'()*;<>?[\]`{|}~]/;
+const UNQUOTED_ESCAPE = /\\[\t !#$&'()*;<>?[\]`{|}~]/g;
 /** The same, in double quotes */
-const QUOTED_ESCAPE = /\\[$`]/;
+const QUOTED_ESCAPE = /\\[$`]/g;
 /** `cross-env` removes the backslashes of these escapes itself */
 const CROSS_ENV_ESCAPE = /^\\[$']$/;
 /** A named variable, e.g. `$HOME` rather than `$?` */
@@ -365,8 +365,8 @@ export class WordChecker {
       : [{pattern: UNQUOTED_ESCAPE, text: word.text}];
 
     const escape = literals
-      .map(({pattern, text}) => pattern.exec(text)?.[0])
-      .find((match) => match != null && !(context.crossEnv && CROSS_ENV_ESCAPE.test(match)));
+      .flatMap(({pattern, text}) => text.match(pattern) || [])
+      .find((match) => !(context.crossEnv && CROSS_ENV_ESCAPE.test(match)));
 
     if (escape != null) {
       this.#reporter.reportSyntax(context, word, 'posix', true, 'inconsistentBehavior', {

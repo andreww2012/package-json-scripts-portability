@@ -1917,6 +1917,15 @@ describe('analyzeScript', () => {
         ],
         // `cross-env` removes them itself
         [String.raw`cross-env A=1 jest --testRegex=.spec.ts\$`, []],
+        // But not other escapes after them
+        [
+          String.raw`cross-env A=\$A\ b node x`,
+          [['inconsistentBehavior', String.raw`A=\$A\ b`, 'win32']],
+        ],
+        [
+          'cross-env A="\\$A \\`x\\`" node x',
+          [['inconsistentBehavior', 'A="\\$A \\`x\\`"', 'win32']],
+        ],
         // Escaped double quotes and backslashes mean the same to Node.js on Windows
         [String.raw`node x.js \"a\" "b\"c" a\\b`, []],
         // Backslashes in Windows paths and regexes are reported as such, or not at all
