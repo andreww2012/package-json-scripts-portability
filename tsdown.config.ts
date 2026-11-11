@@ -5,6 +5,8 @@ export default defineConfig({
   dts: true,
   exports: true,
   unbundle: true,
+  publint: {strict: true},
+  attw: {level: 'error'},
   deps: {
     onlyBundle: ['utilery'],
   },
