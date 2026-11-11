@@ -8,6 +8,11 @@ saveTypes: true
 lockfile:
   # Records `autoDedupe`, so that installs don't resolve the lockfile again
   includeResolutionSettings: true
+updateConfig:
+  ignoreDependencies:
+    # Otherwise `pnpm update` replaces the Node.js version range of the
+    # runtime with its latest version, and CI fails on older Node.js versions
+    - node
 
 minimumReleaseAge: 960 # 16 hours in minutes
 minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list instead of prompting or failing
