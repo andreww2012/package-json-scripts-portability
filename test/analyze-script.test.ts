@@ -33,14 +33,14 @@ const summarizeFixes = (script: string, options?: AnalyzeScriptOptions) =>
     );
 
 /**
- * Summarizes the issues found in a script with some runners as `[messageId, reported text,
- * platforms, runners]` tuples.
+ * Summarizes the issues found in a script as `[messageId, reported text, platforms, runners]`
+ * tuples.
  * @param script Script source to analyze
- * @param runner The runners to analyze it with
+ * @param options Options for the analysis
  * @returns A compact representation of each issue
  */
-const summarizeRunners = (script: string, runner: AnalyzeScriptOptions['runner']) =>
-  analyzeScript(script, {runner}).map(({end, messageId, platforms, pos, runners}) => [
+const summarizeRunners = (script: string, options?: AnalyzeScriptOptions) =>
+  analyzeScript(script, options).map(({end, messageId, platforms, pos, runners}) => [
     messageId,
     script.slice(pos, end),
     platforms.join(','),
@@ -159,12 +159,6 @@ describe('analyzeScript', () => {
       ['/usr/bin/env node x.js', [['unsupportedSyntax', '/usr/bin/env', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
-    });
-
-    it('ignores commands in ignoreCommands', () => {
-      expect(summarize('rm -rf dist && cp a b', {ignoreCommands: ['rm']})).toStrictEqual([
-        ['unsupportedCommand', 'cp', 'win32'],
-      ]);
     });
 
     it('reports a command once per invocation', () => {
@@ -1043,7 +1037,8 @@ describe('analyzeScript', () => {
           ['unsupportedSyntax', '{a,b}', 'linux'],
         ],
       ],
-      // The npm `watch` package, not procps' `watch` // cspell:disable-line
+      // cspell:disable-next-line
+      // The npm `watch` package, not procps' `watch`
       ['watch "npm run build" ./lib', []],
       // Reported once
       ['tsc\nvite build\nnode x', [['unsupportedSyntax', '\n', 'win32']]],
@@ -1428,7 +1423,7 @@ describe('analyzeScript', () => {
       ['rm -rf dist', ['npm', 'npm'], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
       ['rm -rf dist', [], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
     ])('%j with %j', (script, runner, expected) => {
-      expect(summarizeRunners(script, runner)).toStrictEqual(expected);
+      expect(summarizeRunners(script, {runner})).toStrictEqual(expected);
     });
 
     it('keeps a fix that all runners suggest', () => {
@@ -1441,41 +1436,44 @@ describe('analyzeScript', () => {
   describe('runner-agnostic scripts', () => {
     // Only npm and pnpm v10 set `HOME`
     const SCRIPT = 'cross-env CONFIG=${HOME}/.config node x.js';
-    const HOME_ISSUE = ['inconsistentBehavior', '${HOME}', 'win32', 'aube,pnpm,upm,yarn-classic'];
+    const homeIssue = ['inconsistentBehavior', '${HOME}', 'win32', 'aube,pnpm,upm,yarn-classic'];
 
     it.each<[string, AnalyzeScriptOptions, string[][]]>([
-      ['install scripts', {scriptName: 'postinstall'}, [HOME_ISSUE]],
-      ['`prepare`', {scriptName: 'prepare'}, [HOME_ISSUE]],
-      ['other scripts', {scriptName: 'build'}, []],
-      ['no script with `false`', {runnerAgnosticScripts: false, scriptName: 'postinstall'}, []],
-      ['all scripts with `true`', {runnerAgnosticScripts: true, scriptName: 'build'}, [HOME_ISSUE]],
+      ['include install scripts', {scriptName: 'postinstall'}, [homeIssue]],
+      ['include `prepare`', {scriptName: 'prepare'}, [homeIssue]],
+      ["don't include other scripts", {scriptName: 'build'}, []],
       [
-        'scripts set to `true`',
-        {runnerAgnosticScripts: {release: true}, scriptName: 'release'},
-        [HOME_ISSUE],
+        "don't include any script with `false`",
+        {runnerAgnosticScripts: false, scriptName: 'postinstall'},
+        [],
       ],
       [
-        'no scripts set to `false`',
+        'include all scripts with `true`',
+        {runnerAgnosticScripts: true, scriptName: 'build'},
+        [homeIssue],
+      ],
+      [
+        'include scripts set to `true`',
+        {runnerAgnosticScripts: {release: true}, scriptName: 'release'},
+        [homeIssue],
+      ],
+      [
+        "don't include scripts set to `false`",
         {runnerAgnosticScripts: {prepare: false}, scriptName: 'prepare'},
         [],
       ],
       [
-        'the other defaults',
+        'keep the other defaults',
         {runnerAgnosticScripts: {prepare: false}, scriptName: 'postinstall'},
-        [HOME_ISSUE],
+        [homeIssue],
       ],
-      ['no inherited properties', {runnerAgnosticScripts: {}, scriptName: 'constructor'}, []],
-    ])('checks %s with all package managers', (_, options, expected) => {
-      expect(
-        analyzeScript(SCRIPT, {...options, runner: 'npm'}).map(
-          ({end, messageId, platforms, pos, runners}) => [
-            messageId,
-            SCRIPT.slice(pos, end),
-            platforms.join(','),
-            runners.join(','),
-          ],
-        ),
-      ).toStrictEqual(expected);
+      [
+        "don't include inherited properties like `constructor`",
+        {runnerAgnosticScripts: {}, scriptName: 'constructor'},
+        [],
+      ],
+    ])('%s', (_, options, expected) => {
+      expect(summarizeRunners(SCRIPT, {...options, runner: 'npm'})).toStrictEqual(expected);
     });
 
     it("doesn't check them with `node --run`, which doesn't install packages", () => {
@@ -1756,7 +1754,10 @@ describe('analyzeScript', () => {
             ['unsupportedUsage', 'find src -regextype', 'darwin'],
           ],
         ],
-        ['find . -wholename "*x*"', [['unsupportedCommand', 'find', 'win32']]], // cspell:disable-line
+        [
+          'find . -wholename "*x*"', // cspell:disable-line
+          [['unsupportedCommand', 'find', 'win32']],
+        ],
         // BSD `sed` doesn't support GNU's escapes, so the pattern silently doesn't match
         [
           String.raw`sed "/^\s*$/d" f`,
@@ -2071,6 +2072,7 @@ describe('analyzeScript', () => {
 
   describe('ignoreCommands', () => {
     it.each<[string, string[], Summary[]]>([
+      ['rm -rf dist && cp a b', ['rm'], [['unsupportedCommand', 'cp', 'win32']]],
       ['cross-env A=1 rm x', ['rm'], []],
       ['xargs rm < files', ['xargs'], [['unsupportedCommand', 'rm', 'win32']]],
       ['sh -c "rm x"', ['sh'], [['unsupportedCommand', 'rm', 'win32']]],
@@ -2083,7 +2085,8 @@ describe('analyzeScript', () => {
 
   describe('dependencies', () => {
     it("doesn't assume that commands named like a dependency are its binaries", () => {
-      // e.g. the `touch` package's binary is `nodetouch` // cspell:disable-line
+      // cspell:disable-next-line
+      // e.g. the `touch` package's binary is `nodetouch`
       expect(summarize('touch x', {dependencies: ['touch']})).toStrictEqual([
         ['unsupportedCommand', 'touch', 'win32'],
       ]);

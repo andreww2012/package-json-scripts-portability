@@ -1,11 +1,9 @@
 {
-  // cspell:disable
   "recommendations": [
-    "dbaeumer.vscode-eslint",
+    "dbaeumer.vscode-eslint", // cspell:disable-line
     "oxc.oxc-vscode",
     "streetsidesoftware.code-spell-checker",
-    "webpro.vscode-knip",
+    "webpro.vscode-knip", // cspell:disable-line
     "vitest.explorer",
   ],
-  // cspell:enable
 }

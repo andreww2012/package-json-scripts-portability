@@ -78,7 +78,8 @@ const GNU_SED_ESCAPE = /\\[<>bsw]/i;
 const GNU_SED_BASIC_ESCAPE = /\\[+?]/;
 
 /** GNU `xargs` options that BSD `xargs` doesn't support, e.g. `-d` */
-const GNU_XARGS_OPTION = /^(?:-[0prtx]*[adil]|--(?:arg-file|delimiter|max-lines|replace)\b)/; // cspell:disable-line
+// cspell:disable-next-line
+const GNU_XARGS_OPTION = /^(?:-[0prtx]*[adil]|--(?:arg-file|delimiter|max-lines|replace)\b)/;
 
 const LONG_OPTION = /^--[^-]/;
 /** Any option, e.g. `-p` */
@@ -148,6 +149,16 @@ export const checkCommandUsage = (
       });
     }
   };
+  const reportOption = (
+    isMatch: (value: string) => boolean,
+    platforms: readonly Platform[],
+    data: {reason: string; suggestion: string},
+  ) => {
+    const index = optionIndex(isMatch);
+    if (index !== -1) {
+      report(index, platforms, data);
+    }
+  };
   /** Creates a fix that replaces an argument's source text */
   const replaceArgument = (index: number, text: string): UsageFix => ({
     argumentIndex: index,
@@ -213,6 +224,14 @@ export const checkCommandUsage = (
       break;
     }
 
+    case 'base64': {
+      reportOption((value) => isShortOptionCluster(value, 'w'), MACOS_PLATFORMS, {
+        reason: 'BSD `base64` uses `-b` to wrap lines',
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
+      break;
+    }
+
     case 'bash':
     case 'shopt': {
       // `bash -O globstar` and `shopt -s globstar`
@@ -231,36 +250,19 @@ export const checkCommandUsage = (
       break;
     }
 
-    case 'base64': {
-      const index = optionIndex((value) => isShortOptionCluster(value, 'w'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: 'BSD `base64` uses `-b` to wrap lines',
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
-      break;
-    }
-
     case 'cp': {
-      const index = optionIndex((value) => isShortOptionCluster(value, 't'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: "BSD `cp` doesn't support `-t`",
-          suggestion: 'Put the target directory last instead.',
-        });
-      }
+      reportOption((value) => isShortOptionCluster(value, 't'), MACOS_PLATFORMS, {
+        reason: "BSD `cp` doesn't support `-t`",
+        suggestion: 'Put the target directory last instead.',
+      });
       break;
     }
 
     case 'date': {
-      const index = optionIndex((value) => value.startsWith('-d'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: 'BSD `date` uses `-j -f` to parse dates',
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
+      reportOption((value) => value.startsWith('-d'), MACOS_PLATFORMS, {
+        reason: 'BSD `date` uses `-j -f` to parse dates',
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
       break;
     }
 
@@ -270,6 +272,30 @@ export const checkCommandUsage = (
         report(index, LINUX_PLATFORMS, {
           reason: `\`${values[index] || ''}\` is a cmd.exe option`,
           suggestion: NODE_SCRIPT_SUGGESTION,
+        });
+      }
+      break;
+    }
+
+    case 'du': {
+      reportOption((value) => isShortOptionCluster(value, 'b'), MACOS_PLATFORMS, {
+        reason: "BSD `du` doesn't support `-b`",
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
+      break;
+    }
+
+    case 'echo': {
+      const [first] = values;
+      if (isDash && first != null && ECHO_OPTIONS.test(first)) {
+        // macOS' `sh` is Bash in POSIX mode, whose `echo` doesn't take options either
+        const doesInterpretEscapes = first.toLowerCase().includes('e');
+        report(0, doesInterpretEscapes ? PLATFORMS : NOT_MACOS_OR_WINDOWS, {
+          reason: doesInterpretEscapes
+            ? "`sh`'s `echo` on macOS and Debian/Ubuntu, and cmd.exe's `echo` print the option literally"
+            : "`sh`'s `echo` on macOS and cmd.exe's `echo` print the option literally",
+          suggestion: NODE_SCRIPT_SUGGESTION,
+          syntax: `\`echo ${first}\``,
         });
       }
       break;
@@ -305,53 +331,22 @@ export const checkCommandUsage = (
     }
 
     case 'fuser': {
-      const index = optionIndex((value) => isShortOptionCluster(value, 'k'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: "macOS' `fuser` doesn't support `-k`",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
+      reportOption((value) => isShortOptionCluster(value, 'k'), MACOS_PLATFORMS, {
+        reason: "macOS' `fuser` doesn't support `-k`",
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
       break;
     }
 
     case 'grep': {
-      const index = optionIndex(
+      reportOption(
         (value) => isShortOptionCluster(value, 'P') || value === '--perl-regexp',
-      );
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
+        MACOS_PLATFORMS,
+        {
           reason: "BSD `grep` doesn't support Perl-compatible regular expressions",
           suggestion: 'Use `grep -E` or a Node.js script instead.',
-        });
-      }
-      break;
-    }
-
-    case 'du': {
-      const index = optionIndex((value) => isShortOptionCluster(value, 'b'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: "BSD `du` doesn't support `-b`",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
-      break;
-    }
-
-    case 'echo': {
-      const [first] = values;
-      if (isDash && first != null && ECHO_OPTIONS.test(first)) {
-        // macOS' `sh` is Bash in POSIX mode, whose `echo` doesn't take options either
-        const isInterpretsEscapes = first.toLowerCase().includes('e');
-        report(0, isInterpretsEscapes ? PLATFORMS : NOT_MACOS_OR_WINDOWS, {
-          reason: isInterpretsEscapes
-            ? "`sh`'s `echo` on macOS and Debian/Ubuntu, and cmd.exe's `echo` print the option literally"
-            : "`sh`'s `echo` on macOS and cmd.exe's `echo` print the option literally",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-          syntax: `\`echo ${first}\``,
-        });
-      }
+        },
+      );
       break;
     }
 
@@ -374,13 +369,10 @@ export const checkCommandUsage = (
     }
 
     case 'ln': {
-      const index = optionIndex((value) => isShortOptionCluster(value, 'r'));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: "BSD `ln` doesn't support `-r`",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
+      reportOption((value) => isShortOptionCluster(value, 'r'), MACOS_PLATFORMS, {
+        reason: "BSD `ln` doesn't support `-r`",
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
       break;
     }
 
@@ -503,13 +495,10 @@ export const checkCommandUsage = (
     }
 
     case 'sort': {
-      const index = optionIndex((value) => POSIX_OPTION.test(value));
-      if (index !== -1) {
-        report(index, WINDOWS_PLATFORMS, {
-          reason: "Windows' `sort` command uses `/` options",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
+      reportOption((value) => POSIX_OPTION.test(value), WINDOWS_PLATFORMS, {
+        reason: "Windows' `sort` command uses `/` options",
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
       break;
     }
 
@@ -534,6 +523,19 @@ export const checkCommandUsage = (
       break;
     }
 
+    case 'timeout': {
+      if (TIMEOUT_CMD_OPTION.test(values[0] || '')) {
+        report(0, POSIX_PLATFORMS, {
+          reason: "`/t` is an option of Windows' `timeout` command",
+          suggestion: NODE_SCRIPT_SUGGESTION,
+        });
+      } else {
+        // GNU coreutils' `timeout` doesn't exist on macOS, and Windows' `timeout` is unrelated
+        reportCommand(NOT_MACOS_OR_WINDOWS, NODE_SCRIPT_SUGGESTION);
+      }
+      break;
+    }
+
     case 'trap': {
       // e.g. `trap 'RC=1' ERR`
       const index = values.findIndex(
@@ -550,26 +552,10 @@ export const checkCommandUsage = (
     }
 
     case 'xargs': {
-      const index = optionIndex((value) => GNU_XARGS_OPTION.test(value));
-      if (index !== -1) {
-        report(index, MACOS_PLATFORMS, {
-          reason: "BSD `xargs` doesn't support this GNU option",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      }
-      break;
-    }
-
-    case 'timeout': {
-      if (TIMEOUT_CMD_OPTION.test(values[0] || '')) {
-        report(0, POSIX_PLATFORMS, {
-          reason: "`/t` is an option of Windows' `timeout` command",
-          suggestion: NODE_SCRIPT_SUGGESTION,
-        });
-      } else {
-        // GNU coreutils' `timeout` doesn't exist on macOS, and Windows' `timeout` is unrelated
-        reportCommand(NOT_MACOS_OR_WINDOWS, NODE_SCRIPT_SUGGESTION);
-      }
+      reportOption((value) => GNU_XARGS_OPTION.test(value), MACOS_PLATFORMS, {
+        reason: "BSD `xargs` doesn't support this GNU option",
+        suggestion: NODE_SCRIPT_SUGGESTION,
+      });
       break;
     }
 

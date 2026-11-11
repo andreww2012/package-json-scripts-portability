@@ -36,7 +36,7 @@ export interface ScriptIssue {
   data: Record<string, string>;
   /** End offset (exclusive) of the issue in the script */
   end: number;
-  /** A fix that the rule suggests, if the issue has an obvious one */
+  /** A fix for the issue, if it has an obvious one */
   fix?: ScriptFix;
   messageId: ScriptIssueMessageId;
   /** Platforms on which the script doesn't work as intended */
@@ -70,7 +70,7 @@ export class Reporter {
   readonly issues: RunnerIssue[] = [];
 
   /**
-   * Length of the analyzed script, which unbash's positions can exceed, e.g. after a trailing `\\`
+   * Length of the analyzed script, which unbash's positions can exceed, e.g. after a trailing `\`
    */
   readonly #length: number;
   readonly #seen = new Set<string>();
@@ -147,11 +147,11 @@ export class Reporter {
     data: Record<string, string>,
     fix?: ScriptFix,
   ) {
-    let platforms = SYNTAX_PLATFORMS[kind][context.shell];
-
-    if (context.portable) {
-      platforms = isPortableSupported ? [] : PLATFORMS;
-    }
+    const platforms = context.portable
+      ? isPortableSupported
+        ? []
+        : PLATFORMS
+      : SYNTAX_PLATFORMS[kind][context.shell];
 
     return this.report(context, node, messageId, data, platforms, fix);
   }

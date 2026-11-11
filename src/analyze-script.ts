@@ -14,15 +14,16 @@ export interface AnalyzeScriptOptions {
   /**
    * What runs the script: a package manager, or `node` for `node --run`.
    * It decides e.g. which shell runs the script and which environment variables it gets.
-   * Several runners report what breaks with any of them.
+   * Pass several runners to report what breaks with any of them.
    * Defaults to `npm`
    */
   runner?: MaybeReadonlyArray<Runner>;
 
   /**
    * Scripts that any package manager may run, which are checked with all of them instead of
-   * `runner`: `true` for all scripts, `false` for none, or whether each script is, by name, on
-   * top of the defaults (`preinstall`, `install`, `postinstall` and `prepare`)
+   * `runner`.
+   * `true` makes all scripts runner-agnostic, `false` none, and an object sets it for each script
+   * on top of the defaults: `preinstall`, `install`, `postinstall` and `prepare`
    */
   runnerAgnosticScripts?: boolean | Readonly<Record<string, boolean>>;
 

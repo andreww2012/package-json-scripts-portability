@@ -50,6 +50,9 @@ const EXIT_STATUSES: ReadonlyMap<string, string> = new Map([
   ['true', '0'],
 ]);
 
+/** Options of npx and `npm exec` that take a shell string */
+const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
+
 /** Options of pnpm and aube that make the command and its arguments a shell line */
 const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
 
@@ -89,8 +92,6 @@ const findCommandIndex = (
 
   return -1;
 };
-
-const isCommandOption = (value: string) => isShortOptionCluster(value, 'c');
 
 export interface NestedWordsOptions {
   bashOptions?: ReadonlySet<string>;
@@ -335,7 +336,7 @@ export class CommandChecker {
 
     covered.push(...this.#checkUsage(name, nameWord, argumentWords, context));
 
-    // A command that runs in a command that doesn't work on a platform isn't reported for it too.
+    // The commands that it runs aren't reported on the platforms where it's reported already
     // Not `||`: the target of a command named `""` is empty
     result.target =
       this.#checkWrapped(name, argumentWords, withCovered(context, covered), depth)?.target ?? name;
@@ -424,16 +425,16 @@ export class CommandChecker {
 
     // The script of a shell's `-c` option, e.g. in `sh -c "..."`
     const commandStringIndex = () => {
-      const index = values.findIndex((value) => value != null && isCommandOption(value));
+      const index = values.findIndex((value) => isShortOptionCluster(value, 'c'));
       return index === -1 ? -1 : index + 1;
     };
     // `-c`/`--call` of npx and `npm exec` (a shell string), which is only their option before the
     // command they run
     const callIndex = (start: number, valueOptions: readonly string[]) => {
-      const commandIndex = findCommandIndex(values, start, [...valueOptions, '--call', '-c']);
+      const commandIndex = findCommandIndex(values, start, [...valueOptions, ...CALL_OPTIONS]);
       const end = commandIndex === -1 ? values.length : commandIndex;
       const index = values.findIndex(
-        (value, i) => i >= start && i < end && (value === '-c' || value === '--call'),
+        (value, i) => i >= start && i < end && value != null && CALL_OPTIONS.has(value),
       );
       return index === -1 ? -1 : index + 1;
     };
@@ -447,6 +448,8 @@ export class CommandChecker {
         ? commandIndex
         : -1;
     };
+
+    const valueOptions = WRAPPER_VALUE_OPTIONS.get(name);
 
     switch (name) {
       case 'bash':
@@ -529,7 +532,7 @@ export class CommandChecker {
 
       case 'npx':
       case 'upx': {
-        const call = callIndex(0, WRAPPER_VALUE_OPTIONS.get(name) || []);
+        const call = callIndex(0, valueOptions || []);
         if (call !== -1) {
           nestedShellString(call);
           return undefined;
@@ -539,7 +542,7 @@ export class CommandChecker {
 
       case 'aubx':
       case 'pnpx': {
-        const shellLine = shellModeIndex(0, WRAPPER_VALUE_OPTIONS.get(name) || []);
+        const shellLine = shellModeIndex(0, valueOptions || []);
         if (shellLine !== -1) {
           nestedShellLine(shellLine);
           return undefined;
@@ -551,8 +554,6 @@ export class CommandChecker {
         break;
       }
     }
-
-    const valueOptions = WRAPPER_VALUE_OPTIONS.get(name);
 
     // `command -v` looks a command up instead of running it
     return !valueOptions ||

@@ -54,7 +54,7 @@ const WINDOWS_BATCH_SYNTAX =
 const SINGLE_QUOTE = /'/;
 const ANY_CHARACTER = /[\s\S]/;
 
-const doesChangeDirectory = (node: AndOr | PipelineNode): boolean => {
+const doesChangeDirectory = (node: AndOr | PipelineNode) => {
   switch (node.type) {
     case 'AndOr':
     case 'Pipeline': {
@@ -203,8 +203,8 @@ class ScriptAnalyzer {
 
     this.#commands.addPositionalFixes(script.commands);
 
-    const isEnablesGlobstar = context.shell === 'bash' && SHOPT_GLOBSTAR.test(context.source);
-    const scriptContext = isEnablesGlobstar
+    const doesEnableGlobstar = context.shell === 'bash' && SHOPT_GLOBSTAR.test(context.source);
+    const scriptContext = doesEnableGlobstar
       ? {...context, bashOptions: new Set([...(context.bashOptions || []), 'globstar'])}
       : context;
 
@@ -476,14 +476,14 @@ class ScriptAnalyzer {
       }
 
       case 'Function': {
-        const isUsesKeyword = context.source.startsWith('function', node.pos);
+        const hasFunctionKeyword = context.source.startsWith('function', node.pos);
         const covered = this.#reporter.reportSyntax(
           context,
           {end: node.name.end, pos: node.pos},
-          isUsesKeyword ? 'bash' : 'posix',
+          hasFunctionKeyword ? 'bash' : 'posix',
           false,
           'unsupportedSyntax',
-          isUsesKeyword
+          hasFunctionKeyword
             ? {
                 suggestion: 'Use `name() { ... }` or a Node.js script instead.',
                 syntax: 'The Bash-specific `function` keyword',

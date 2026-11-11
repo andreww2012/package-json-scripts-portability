@@ -2,4 +2,4 @@
 "package-json-scripts-portability": patch
 ---
 
-Supported Node.js versions are widened to `>=22`
+Widened supported Node.js versions to `>=22`

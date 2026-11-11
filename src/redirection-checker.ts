@@ -31,7 +31,7 @@ export class RedirectionChecker {
   }
 
   checkEchoToFile(node: Command, context: Context) {
-    const isWritesFile = node.redirects.some(
+    const doesWriteFile = node.redirects.some(
       (redirect) =>
         redirect.type === 'Redirect' &&
         (redirect.operator === '>' || redirect.operator === '>>') &&
@@ -44,7 +44,7 @@ export class RedirectionChecker {
         argument.type === 'Word' && argument.parts?.some((part) => part.type === 'DoubleQuoted'),
     );
 
-    if (isWritesFile && quoted) {
+    if (doesWriteFile && quoted) {
       this.#reporter.reportSyntax(context, quoted, 'posix', true, 'inconsistentBehavior', {
         reason: "cmd.exe's `echo` writes the quotes into the file",
         suggestion: NODE_SCRIPT_SUGGESTION,
@@ -57,7 +57,7 @@ export class RedirectionChecker {
    * Checks a redirection and its target.
    * @param redirection Redirection to check, e.g. `> out.log`
    * @param context Where the redirection is
-   * @param isWholeCommand Whether it's all that its command consists of, e.g. in `tsc | >log`
+   * @param isWholeCommand Whether the redirection is the whole command, e.g. `>log` in `tsc | >log`
    */
   checkRedirection(redirection: Redirection, context: Context, isWholeCommand = false) {
     const text = context.source.slice(redirection.pos, redirection.end);
@@ -92,7 +92,7 @@ export class RedirectionChecker {
           });
         }
 
-        // e.g. in `a 2&>log`, where `2` would otherwise become the descriptor of `2>&1`
+        // Keeps the word before it from becoming a descriptor, e.g. `2` in `a 2&>log`
         const separator =
           redirection.pos > 0 && !WHITESPACE.test(context.source.charAt(redirection.pos - 1))
             ? ' '
@@ -190,7 +190,7 @@ export class RedirectionChecker {
     }
 
     // Without the redirection, the output appears in the terminal instead
-    const isDiscardsOutput =
+    const doesDiscardOutput =
       !isWholeCommand &&
       redirection.type === 'Redirect' &&
       (redirection.operator === '>' || redirection.operator === '>>') &&
@@ -200,7 +200,7 @@ export class RedirectionChecker {
       redirection.target,
       target,
       context,
-      isDiscardsOutput
+      doesDiscardOutput
         ? {
             description: `Remove \`${truncate(text)}\`.`,
             edits: [removal(context.source, redirection.pos, redirection.end)],

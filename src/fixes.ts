@@ -188,8 +188,8 @@ export const braceExpansionFix = (word: Word, part: BraceExpansionPart) => {
 };
 
 /**
- * Checks whether making a statement part of an AND list with the previous one only stops it after
- * a failure.
+ * Checks whether joining a statement to the previous one with `&&` keeps the logic the same,
+ * apart from stopping after a failure.
  * @param next The statement that follows
  * @returns Whether the rest of the logic stays the same, e.g. not for `a; b || c`, which would run
  * `c` when `a` fails

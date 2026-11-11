@@ -61,5 +61,8 @@ export const isPlainWord = (word: Word, partTypes: readonly WordPart['type'][] =
 export const isPlainAssignment = (item: Assignment | Redirection | Word) =>
   item.type === 'Assignment' && item.value.type === 'Word' && item.index == null && !item.append;
 
-/** Device files, which (unlike e.g. `/usr/...`) are rarely paths in containers or remote hosts */
+/**
+ * Device paths, e.g. `/dev/null`.
+ * Unlike other absolute paths, they are rarely meant for containers or remote hosts
+ */
 export const POSIX_PATH = /(?:^|=)\/dev\//;

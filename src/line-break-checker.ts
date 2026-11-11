@@ -17,7 +17,7 @@ export class LineBreakChecker {
   }
 
   /**
-   * Reports a line break in a command, e.g. after a `\\` line continuation or in a quoted string.
+   * Reports a line break in a command, e.g. after a `\` line continuation or in a quoted string.
    * @param node The command
    * @param context Where the command is
    */
@@ -32,7 +32,7 @@ export class LineBreakChecker {
     const isInWord = [node.name, ...node.prefix, ...node.suffix].some(
       (item) => item && item.pos <= position && position < item.end,
     );
-    // Yarn's shell keeps a `\\` line continuation as a line break, but supports one in quotes
+    // Yarn's shell keeps a `\` line continuation as a line break, but supports one in quotes
     const isQuoted = isInWord && context.source[position - 1] !== '\\';
 
     this.reportLineBreak(
@@ -88,7 +88,8 @@ export class LineBreakChecker {
     fix?: ScriptFix,
     isPortableSupported = false,
   ) {
-    const range = rangeInScript(context, {end: position + 1, pos: position});
+    const lineBreak = {end: position + 1, pos: position};
+    const range = rangeInScript(context, lineBreak);
     // e.g. in `concurrently "a` + line break + `b"`, which is reported for the outer script already
     const isReported = this.#lineBreaks.some(
       (reported) => reported.pos < range.end && range.pos < reported.end,
@@ -100,7 +101,7 @@ export class LineBreakChecker {
 
     const platforms = this.#reporter.reportSyntax(
       context,
-      {end: position + 1, pos: position},
+      lineBreak,
       'posix',
       isPortableSupported,
       'unsupportedSyntax',

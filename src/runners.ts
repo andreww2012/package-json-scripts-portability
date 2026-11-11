@@ -34,8 +34,8 @@ export const RUNNER_AGNOSTIC_SCRIPTS: ReadonlySet<string> = new Set([
 /**
  * Checks whether any package manager may run a script.
  * @param scriptName The script's name in package.json
- * @param scripts `true` for all scripts, `false` for none, or whether each script is, on top of
- * the defaults
+ * @param scripts `true` for all scripts, `false` for none, or whether each script is
+ * runner-agnostic, on top of the defaults
  * @returns Whether the script is runner-agnostic
  */
 export const isRunnerAgnosticScript = (
@@ -114,7 +114,7 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
   },
 };
 
-/** Runners that package managers of the same name are, i.e. all of them but pnpm and Yarn */
+/** Package managers whose runner always has the same name, i.e. all of them but pnpm and Yarn */
 const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'upm']);
 
 /** The first number of a version or a version range, e.g. `1` in `^1.22.0` */
@@ -154,7 +154,7 @@ export const getRunner = (name: string, version = '') => {
  * @returns The runner's traits
  */
 export const runnerTraits = (runner: Runner, isShellEmulated: boolean) =>
-  // pnpm runs the scripts with Yarn's portable shell then
+  // With `shell-emulator` on, pnpm runs the scripts with Yarn's portable shell
   isShellEmulated && (runner === 'pnpm' || runner === 'pnpm-10')
     ? {
         ...RUNNER_TRAITS[runner],

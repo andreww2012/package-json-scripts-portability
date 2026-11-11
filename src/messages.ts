@@ -10,8 +10,6 @@ export const CROSS_ENV_VARIABLE_SUGGESTION =
   '`cross-env` only replaces `$VAR` and `${VAR}` in all versions; use a Node.js script instead.';
 export const DEFAULT_SUGGESTION = 'Use a cross-platform package or a Node.js script instead.';
 export const NODE_SCRIPT_SUGGESTION = 'Use a Node.js script instead.';
-export const QUOTE_GLOB_SUGGESTION =
-  'Quote it with escaped double quotes (`\\"`) and let the tool expand it instead.';
 export const RIMRAF_SUGGESTION = 'Use `rimraf` instead.';
 export const SHELL_SCRIPT_SUGGESTION =
   'Shell scripts require a POSIX shell; use a Node.js script instead.';

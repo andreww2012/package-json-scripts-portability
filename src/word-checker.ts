@@ -19,7 +19,6 @@ import {
   CROSS_ENV_SUGGESTION,
   CROSS_ENV_VARIABLE_SUGGESTION,
   NODE_SCRIPT_SUGGESTION,
-  QUOTE_GLOB_SUGGESTION,
   VARIABLE_SUGGESTION,
   truncate,
 } from './messages.ts';
@@ -123,7 +122,7 @@ const BACKSLASH_PATH =
 const WINDOWS_PATH_PREFIX = /^(?:[a-z]:|\.{1,2})\\/i;
 const FILE_EXTENSION = /\.\w+$/;
 const MULTIPLE_BACKSLASHES = /\\.*\\/;
-/** Backslashes that only escape dots are rather a regex, e.g. `logging\.spec\.ts` */
+/** Backslashes that only escape dots are likely a regex, e.g. `logging\.spec\.ts` */
 const NON_DOT_ESCAPE = /\\[^.]/;
 
 const hasBashArithmetic = (expression: ArithmeticExpression | undefined): boolean => {
@@ -175,7 +174,8 @@ const parameterOperands = (operation: ParameterOperation) => {
 };
 
 /**
- * Checks whether a command is rather a tool than an OS utility or a cmd.exe command, e.g. `eslint`.
+ * Checks whether a command is likely a tool, e.g. `eslint`, and not an OS utility or a cmd.exe
+ * command.
  * Tools usually expand globs themselves and accept `/` as a path separator.
  * @param command Name of the command that receives the arguments
  * @returns Whether the command is likely a tool
@@ -213,7 +213,7 @@ export class WordChecker {
   checkAssignment(assignment: Assignment, context: Context, command: Command | undefined) {
     const {append, index, value} = assignment;
     const isBashSpecific = value.type === 'ArrayValue' || index != null || append;
-    const isPrefixesCommand = command != null;
+    const doesPrefixCommand = command != null;
 
     if (isBashSpecific) {
       this.#reporter.reportSyntax(context, assignment, 'bash', false, 'unsupportedSyntax', {
@@ -229,7 +229,7 @@ export class WordChecker {
         'unsupportedSyntax',
         {
           suggestion: CROSS_ENV_SUGGESTION,
-          syntax: isPrefixesCommand
+          syntax: doesPrefixCommand
             ? `The inline environment variable assignment \`${truncate(assignment.text)}\``
             : `The shell variable assignment \`${truncate(assignment.text)}\``,
         },
@@ -244,7 +244,7 @@ export class WordChecker {
 
     // The suggested fix moves the value to `cross-env`, so only report what breaks there too
     const valueContext =
-      isPrefixesCommand && !isBashSpecific ? {...context, crossEnv: true} : context;
+      doesPrefixCommand && !isBashSpecific ? {...context, crossEnv: true} : context;
     (value.type === 'ArrayValue' ? value.elements : [value]).forEach((word) => {
       this.checkWord(word, valueContext);
     });
@@ -354,18 +354,18 @@ export class WordChecker {
     const literals = word.parts
       ? word.parts.flatMap((part) => {
           if (part.type === 'Literal') {
-            return {escape: UNQUOTED_ESCAPE, text: part.text};
+            return {pattern: UNQUOTED_ESCAPE, text: part.text};
           }
           return part.type === 'DoubleQuoted'
             ? part.parts.flatMap((child) =>
-                child.type === 'Literal' ? {escape: QUOTED_ESCAPE, text: child.text} : [],
+                child.type === 'Literal' ? {pattern: QUOTED_ESCAPE, text: child.text} : [],
               )
             : [];
         })
-      : [{escape: UNQUOTED_ESCAPE, text: word.text}];
+      : [{pattern: UNQUOTED_ESCAPE, text: word.text}];
 
     const escape = literals
-      .map(({escape: pattern, text}) => pattern.exec(text)?.[0])
+      .map(({pattern, text}) => pattern.exec(text)?.[0])
       .find((match) => match != null && !(context.crossEnv && CROSS_ENV_ESCAPE.test(match)));
 
     if (escape != null) {
@@ -377,9 +377,7 @@ export class WordChecker {
     }
 
     // cmd.exe's own escape character, e.g. in `npm install mobx@^5`
-    if (
-      literals.some(({escape: pattern, text}) => pattern === UNQUOTED_ESCAPE && text.includes('^'))
-    ) {
+    if (literals.some(({pattern, text}) => pattern === UNQUOTED_ESCAPE && text.includes('^'))) {
       this.#reporter.reportSyntax(
         context,
         word,
@@ -663,9 +661,7 @@ export class WordChecker {
         word,
         'unsupportedSyntax',
         {
-          suggestion: value.includes('/dev/')
-            ? 'Remove it or use a Node.js script instead.'
-            : 'Use a path relative to the package or a Node.js script instead.',
+          suggestion: 'Remove it or use a Node.js script instead.',
           syntax: `The POSIX path \`${truncate(value)}\``,
         },
         WINDOWS_PLATFORMS,
@@ -695,8 +691,9 @@ export class WordChecker {
     };
     this.#checkParts(word.parts || [], context, state);
 
-    const hasGlob = state.globPosition != null;
-    const globPrefix = hasGlob ? text.slice(0, (state.globPosition || 0) - word.pos) : '';
+    const {globPosition} = state;
+    const hasGlob = globPosition != null;
+    const globPrefix = hasGlob ? text.slice(0, globPosition - word.pos) : '';
 
     // A pattern in an option or assignment value (e.g. `--include=src/*`) can't match a file, so
     // every shell passes it on literally
@@ -722,7 +719,8 @@ export class WordChecker {
         {
           reason:
             "`sh` doesn't support recursive `**` globs, and cmd.exe doesn't expand globs at all",
-          suggestion: QUOTE_GLOB_SUGGESTION,
+          suggestion:
+            'Quote it with escaped double quotes (`\\"`) and let the tool expand it instead.',
           syntax: `The unquoted glob \`${truncate(text)}\``,
         },
         PLATFORMS,
@@ -794,7 +792,7 @@ export class WordChecker {
       this.#checkEscapes(word, context);
     }
 
-    // In single quotes, it's rather a placeholder of the tool, e.g. in
+    // In single quotes, it's likely the tool's own placeholder, e.g. in
     // `--bundle-structure '%LANG_ISO%.json'`
     if (!state.hasSingleQuotes && options.command !== 'date' && options.command !== 'printf') {
       const match = WINDOWS_VARIABLE.exec(text);

@@ -489,22 +489,25 @@ export const PATTERN_COMMANDS: ReadonlySet<string> = new Set([
 
 /** Commands that run the command given as their arguments, with their options that take a value */
 export const WRAPPER_VALUE_OPTIONS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['aubx', ['--package', '-p']],
-  ['bunx', ['--package', '-p']],
+  ['aubx', EXEC_VALUE_OPTIONS],
+  ['bunx', EXEC_VALUE_OPTIONS],
   ['command', []],
   ['env', ['--chdir', '--split-string', '--unset', '-C', '-S', '-u']],
   ['exec', ['-a']],
   ['nice', ['--adjustment', '-n']],
   ['nohup', []],
-  ['npx', ['--package', '-p']],
-  ['pnpx', ['--package', '-p']],
+  ['npx', EXEC_VALUE_OPTIONS],
+  ['pnpx', EXEC_VALUE_OPTIONS],
   ['sudo', ['-C', '-D', '-g', '-h', '-p', '-r', '-t', '-U', '-u']],
   ['time', ['-f', '-o']],
-  ['upx', ['--package', '-p']],
+  ['upx', EXEC_VALUE_OPTIONS],
   ['xargs', ['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s']],
 ]);
 
-/** Builtins that change the shell's state, which a subshell keeps from the commands that follow */
+/**
+ * Builtins that change the shell's state.
+ * In a subshell, the change doesn't reach the commands that follow
+ */
 export const SHELL_STATE_COMMANDS: ReadonlySet<string> = new Set([
   '.',
   'alias',
