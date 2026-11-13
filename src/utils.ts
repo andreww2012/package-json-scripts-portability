@@ -11,6 +11,7 @@ export {
   clamp,
   isEqual,
   mapGetOrInsert,
+  mapGetOrInsertComputed,
   setHas,
   slidingWindow,
   substringAfterLast,

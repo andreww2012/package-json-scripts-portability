@@ -4,6 +4,7 @@ import {
   type Command,
   type CompoundList,
   type DoubleQuotedChild,
+  type ParsedScript,
   type Pipeline,
   type PipelineNode,
   type Script,
@@ -37,7 +38,7 @@ import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './pl
 import {RedirectionChecker} from './redirection-checker.ts';
 import {Reporter} from './reporter.ts';
 import {type Runner, type RunnerTraits, runnerTraits} from './runners.ts';
-import {arrayIsSubset, substringBefore} from './utils.ts';
+import {arrayIsSubset, mapGetOrInsertComputed, substringBefore} from './utils.ts';
 import {WordChecker} from './word-checker.ts';
 import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE} from './words.ts';
 
@@ -166,13 +167,21 @@ const findFallbackEnd = (
 class ScriptAnalyzer {
   readonly #commands: CommandChecker;
   readonly #lineBreaks: LineBreakChecker;
+  /** Parsed sources of the script and of the scripts nested in it, e.g. in `sh -c "..."` */
+  readonly #parsedScripts: Map<string, ParsedScript>;
   /** Commands whose output goes into a pipe */
   readonly #pipedCommands = new Set<PipelineNode>();
   readonly #redirections: RedirectionChecker;
   readonly #reporter: Reporter;
   readonly #words: WordChecker;
 
-  constructor(length: number, options: AnalyzeScriptOptions, traits: RunnerTraits) {
+  constructor(
+    length: number,
+    options: AnalyzeScriptOptions,
+    traits: RunnerTraits,
+    parsedScripts: Map<string, ParsedScript>,
+  ) {
+    this.#parsedScripts = parsedScripts;
     this.#reporter = new Reporter(length);
     this.#words = new WordChecker(
       this.#reporter,
@@ -193,7 +202,7 @@ class ScriptAnalyzer {
   }
 
   analyzeSource(context: Context) {
-    const script = parse(context.source);
+    const script = mapGetOrInsertComputed(this.#parsedScripts, context.source, parse);
 
     if (script.errors?.length) {
       // The script is probably not meant for a POSIX shell, so only look for cmd.exe syntax
@@ -822,31 +831,38 @@ class ScriptAnalyzer {
 }
 
 /**
- * Analyzes a script as a runner runs it.
+ * Analyzes a script as each of the runners runs it.
  * @param script The script's source
  * @param options Analysis options
- * @param runner What runs the script
- * @returns The issues found with the runner
+ * @param runners What runs the script
+ * @returns The issues found with each runner
  */
-export const analyzeWithRunner = (
+export const analyzeWithRunners = (
   script: string,
   options: AnalyzeScriptOptions,
-  runner: Runner,
+  runners: readonly Runner[],
 ) => {
-  const traits = runnerTraits(runner, options.shellEmulator || false);
-  const analyzer = new ScriptAnalyzer(script.length, options, traits);
+  // Parsing doesn't depend on the runner, so each source is parsed once for all of them
+  const parsedScripts = new Map<string, ParsedScript>();
 
-  analyzer.analyzeSource({
-    convertsSlashes: traits.convertsSlashes || false,
-    covered: new Set(),
-    crossEnv: false,
-    fixExclusions: [],
-    fixedRange: undefined,
-    offset: 0,
-    portable: traits.portableShell || false,
-    shell: 'native',
-    source: script,
-  });
+  return new Map(
+    runners.map((runner) => {
+      const traits = runnerTraits(runner, options.shellEmulator || false);
+      const analyzer = new ScriptAnalyzer(script.length, options, traits, parsedScripts);
 
-  return analyzer.issues;
+      analyzer.analyzeSource({
+        convertsSlashes: traits.convertsSlashes || false,
+        covered: new Set(),
+        crossEnv: false,
+        fixExclusions: [],
+        fixedRange: undefined,
+        offset: 0,
+        portable: traits.portableShell || false,
+        shell: 'native',
+        source: script,
+      });
+
+      return [runner, analyzer.issues] as const;
+    }),
+  );
 };

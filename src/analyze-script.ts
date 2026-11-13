@@ -1,7 +1,7 @@
 import {PLATFORMS} from './platforms.ts';
 import {type RunnerIssue, type ScriptIssue, issueKey} from './reporter.ts';
 import {PACKAGE_MANAGER_RUNNERS, type Runner, isRunnerAgnosticScript} from './runners.ts';
-import {analyzeWithRunner} from './script-analyzer.ts';
+import {analyzeWithRunners} from './script-analyzer.ts';
 import {type MaybeReadonlyArray, arrayIntersection, arrayify, isEqual} from './utils.ts';
 
 export interface AnalyzeScriptOptions {
@@ -87,10 +87,6 @@ export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}
     ? PACKAGE_MANAGER_RUNNERS
     : arrayify(options.runner);
   return mergeIssues(
-    new Map(
-      (runners.length > 0 ? runners : DEFAULT_RUNNERS).map(
-        (runner) => [runner, analyzeWithRunner(script, options, runner)] as const,
-      ),
-    ),
+    analyzeWithRunners(script, options, runners.length > 0 ? runners : DEFAULT_RUNNERS),
   );
 };
