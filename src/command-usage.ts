@@ -15,7 +15,7 @@ import {
   type Platform,
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
-import {substringBefore} from './utils.ts';
+import {setHas, substringBefore} from './utils.ts';
 import {ASSIGNMENT, isShortOptionCluster} from './words.ts';
 
 interface CommandArgument {
@@ -303,7 +303,7 @@ export const checkCommandUsage = (
 
     case 'find': {
       const start = values.findIndex((value) => value == null || !BSD_FIND_OPTIONS.test(value));
-      const primary = values.findIndex((value) => value != null && GNU_FIND_PRIMARIES.has(value));
+      const primary = values.findIndex((value) => setHas(GNU_FIND_PRIMARIES, value));
 
       if (values[start]?.startsWith('-')) {
         // GNU `find` uses the current directory by default
@@ -539,7 +539,7 @@ export const checkCommandUsage = (
     case 'trap': {
       // e.g. `trap 'RC=1' ERR`
       const index = values.findIndex(
-        (value, valueIndex) => valueIndex > 0 && value != null && BASH_TRAP_CONDITIONS.has(value),
+        (value, valueIndex) => valueIndex > 0 && setHas(BASH_TRAP_CONDITIONS, value),
       );
       if (isDash && index !== -1) {
         report(index, LINUX_PLATFORMS, {

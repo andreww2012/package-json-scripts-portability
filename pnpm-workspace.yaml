@@ -17,8 +17,7 @@ updateConfig:
 minimumReleaseAge: 960 # 16 hours in minutes
 minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list instead of prompting or failing
 minimumReleaseAgeExclude: # []
-  - eslint-plugin-github-action@0.5.0
-  - knip@6.45.1
+  - utilery@0.4.0
 minimumReleaseAgeExcludePrune: true
 
 trustPolicy: no-downgrade

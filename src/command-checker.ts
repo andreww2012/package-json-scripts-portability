@@ -13,8 +13,15 @@ import {
 import {type Context, type Shell, withCovered} from './context.ts';
 import {DEPENDENCY_BINARY, commandFix, pathCommandFix, replacement} from './fixes.ts';
 import {NODE_SCRIPT_SUGGESTION, SHELL_SCRIPT_SUGGESTION, truncate} from './messages.ts';
-import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
+import {
+  LINUX_PLATFORMS,
+  PLATFORMS,
+  POSIX_PLATFORMS,
+  type Platform,
+  WINDOWS_PLATFORMS,
+} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
+import {arrayDifference, arrayIncludes, setHas, slidingWindow} from './utils.ts';
 import {
   ASSIGNMENT,
   WHITESPACE,
@@ -226,7 +233,7 @@ export class CommandChecker {
     let {platforms} = info;
 
     if (info.bashBuiltin && context.shell === 'bash') {
-      platforms = platforms.filter((platform) => platform !== 'linux');
+      platforms = arrayDifference(platforms, LINUX_PLATFORMS);
     }
 
     if (context.portable && CMD_BUILTINS.has(lowerCaseName)) {
@@ -434,7 +441,7 @@ export class CommandChecker {
       const commandIndex = findCommandIndex(values, start, [...valueOptions, ...CALL_OPTIONS]);
       const end = commandIndex === -1 ? values.length : commandIndex;
       const index = values.findIndex(
-        (value, i) => i >= start && i < end && value != null && CALL_OPTIONS.has(value),
+        (value, i) => i >= start && i < end && setHas(CALL_OPTIONS, value),
       );
       return index === -1 ? -1 : index + 1;
     };
@@ -444,7 +451,7 @@ export class CommandChecker {
       const commandIndex = findCommandIndex(values, start, valueOptions);
       return values
         .slice(start, commandIndex === -1 ? values.length : commandIndex)
-        .some((value) => value != null && SHELL_MODE_OPTIONS.has(value))
+        .some((value) => setHas(SHELL_MODE_OPTIONS, value))
         ? commandIndex
         : -1;
     };
@@ -460,8 +467,8 @@ export class CommandChecker {
           'bash',
           // e.g. `bash -O globstar -c "..."`
           new Set(
-            values.filter(
-              (value, index): value is string => Boolean(value) && values[index - 1] === '-O',
+            slidingWindow(values, 2).flatMap(([option, value]) =>
+              option === '-O' && value ? [value] : [],
             ),
           ),
         );
@@ -509,7 +516,7 @@ export class CommandChecker {
       case 'yarn': {
         // e.g. `pnpm exec rm -rf dist`
         const subcommand = findCommandIndex(values, 0, PACKAGE_MANAGER_VALUE_OPTIONS);
-        if (!EXEC_SUBCOMMANDS[name].includes(values[subcommand] || '')) {
+        if (!arrayIncludes(EXEC_SUBCOMMANDS[name], values[subcommand])) {
           return undefined;
         }
 

@@ -2,6 +2,7 @@ import type {Command} from 'unbash';
 import {type Context, type Range, rangeInScript} from './context.ts';
 import {joinLinesFix} from './fixes.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
+import {slidingWindow} from './utils.ts';
 
 const ONE_LINE_SUGGESTION = 'Put the command on one line instead.';
 
@@ -50,12 +51,7 @@ export class LineBreakChecker {
    * @param context Where the commands are
    */
   checkOperatorLineBreaks(commands: readonly Range[], context: Context) {
-    for (const [index, next] of commands.entries()) {
-      const command = commands[index - 1];
-      if (!command) {
-        continue;
-      }
-
+    for (const [command, next] of slidingWindow(commands, 2)) {
       const between = context.source.slice(command.end, next.pos);
       const newline = between.indexOf('\n');
 

@@ -1,5 +1,5 @@
 import {listFormat} from './messages.ts';
-import {allUnionMembers, arrayIntersection, setHas} from './utils.ts';
+import {allUnionMembers, arrayDifference, arrayIntersection, setHas} from './utils.ts';
 
 /** What can run the scripts: a package manager, or `node` for `node --run` */
 export type Runner = 'aube' | 'node' | 'npm' | 'pnpm' | 'pnpm-10' | 'upm' | 'yarn' | 'yarn-classic';
@@ -16,9 +16,7 @@ export const RUNNERS: readonly Runner[] = allUnionMembers<Runner, {readonly: tru
 ]);
 
 /** Runners that are package managers: all of them but `node`, which doesn't install packages */
-export const PACKAGE_MANAGER_RUNNERS: readonly Runner[] = RUNNERS.filter(
-  (runner) => runner !== 'node',
-);
+export const PACKAGE_MANAGER_RUNNERS: readonly Runner[] = arrayDifference(RUNNERS, ['node']);
 
 /**
  * Scripts that run with any package manager by default, as they run on the machine of whoever

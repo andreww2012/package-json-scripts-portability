@@ -9,7 +9,7 @@ import {
 } from './messages.ts';
 import {POSIX_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
-import {mapGetOrInsert} from './utils.ts';
+import {mapGetOrInsert, setHas} from './utils.ts';
 import type {WordChecker} from './word-checker.ts';
 import {POSIX_PATH, WHITESPACE, staticValue} from './words.ts';
 
@@ -37,7 +37,7 @@ export class RedirectionChecker {
         (redirect.operator === '>' || redirect.operator === '>>') &&
         redirect.descriptor == null &&
         !POSIX_PATH.test(redirect.target?.value || '') &&
-        !WINDOWS_DEVICES.has(redirect.target?.value.toLowerCase() || ''),
+        !setHas(WINDOWS_DEVICES, redirect.target?.value.toLowerCase()),
     );
     const quoted = node.args.find(
       (argument) =>

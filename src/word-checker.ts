@@ -25,7 +25,7 @@ import {
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {RunnerTraits} from './runners.ts';
-import {substringAfterLast, toForwardSlashes} from './utils.ts';
+import {setHas, substringAfterLast, toForwardSlashes} from './utils.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
   GLOB_PART_TYPES,
@@ -750,7 +750,7 @@ export class WordChecker {
       });
     }
 
-    const isPattern = options.command != null && PATTERN_COMMANDS.has(options.command);
+    const isPattern = setHas(PATTERN_COMMANDS, options.command);
     const unquoted = text.replaceAll('"', '');
     const path = substringAfterLast(unquoted, '=');
 
