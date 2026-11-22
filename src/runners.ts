@@ -4,7 +4,6 @@ import {
   arrayDifference,
   arrayIntersection,
   isSemverInRange,
-  mapGetOrInsertComputed,
   parseSemver,
   setHas,
 } from './utils.ts';
@@ -208,22 +207,30 @@ export const getRunner = (name: string, version = '') => {
 export const runnerTraits = (runner: Runner, isShellEmulated: boolean) =>
   (isShellEmulated && SHELL_EMULATOR_TRAITS[runner]) || RUNNER_TRAITS[runner];
 
-const behaviorKeys = new Map<RunnerTraits, string>();
-
 /**
- * Gets what tells apart how runners run the scripts.
- * Runners with the same behavior have the same issues, e.g. aube and pnpm.
- * @param traits A runner's traits
- * @returns A string that is the same for the same behavior
+ * Reads a runner's traits and remembers the values that were read.
+ * An analysis gives the same result for all runners with the same values of the traits it read, so
+ * it must read them only through this
  */
-export const runnerBehavior = (traits: RunnerTraits) =>
-  mapGetOrInsertComputed(
-    behaviorKeys,
-    traits,
-    // Reports only name the runner when it doesn't set some variables
-    ({label, packageManagerVariables, ...flags}) =>
-      JSON.stringify([flags, packageManagerVariables && label]),
-  );
+export class TraitsReader {
+  readonly #readValues = new Map<keyof RunnerTraits, unknown>();
+  readonly #traits: RunnerTraits;
+
+  constructor(traits: RunnerTraits) {
+    this.#traits = traits;
+  }
+
+  get<Key extends keyof RunnerTraits>(key: Key) {
+    const value = this.#traits[key];
+    this.#readValues.set(key, value);
+    return value;
+  }
+
+  /** Checks whether other traits have the same values as the ones that were read */
+  matches(traits: RunnerTraits) {
+    return this.#readValues.entries().every(([key, value]) => traits[key] === value);
+  }
+}
 
 /**
  * Formats runners as a list for people, e.g. "pnpm and Yarn v1".

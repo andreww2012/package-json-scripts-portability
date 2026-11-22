@@ -22,6 +22,7 @@ import {
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
+import type {TraitsReader} from './runners.ts';
 import {arrayDifference, arrayIncludes, setHas, slidingWindow} from './utils.ts';
 import {
   ASSIGNMENT,
@@ -48,8 +49,22 @@ interface InvocationResult {
  */
 export const MAX_DEPTH = 10;
 
-/** Where Yarn v1 replaces `/` with `\` in a command's name: at the start and after an operator */
-const YARN_COMMAND_START = /(?:^|&&|&|\|\||\|)\s*$/;
+/**
+ * Checks whether Yarn v1 replaces `/` with `\` in a command's name: at the start of the script and
+ * after an operator, i.e. `&&`, `&`, `||` or `|`.
+ * @param source The source that the name is in
+ * @param position Where the name starts in the source
+ * @returns Whether it does
+ */
+const isYarnCommandStart = (source: string, position: number) => {
+  let index = position;
+  while (index > 0 && WHITESPACE.test(source[index - 1] || '')) {
+    index--;
+  }
+
+  const previous = source[index - 1];
+  return index === 0 || previous === '&' || previous === '|';
+};
 
 /**
  * Checks whether a name is a package spec rather than a path, e.g. `@scope/name` or
@@ -185,15 +200,18 @@ export class CommandChecker {
   /** Fixes that depend on where a command is, by the command's name, e.g. `exit 0` for `true` */
   readonly #positionalFixes = new Map<Word, ScriptFix>();
   readonly #reporter: Reporter;
+  readonly #runnerTraits: TraitsReader;
 
   constructor(
     reporter: Reporter,
     options: CommandOptions,
     analyzeNestedWords: NestedWordsAnalyzer,
+    runnerTraits: TraitsReader,
   ) {
     this.#reporter = reporter;
     this.#options = options;
     this.#analyzeNestedWords = analyzeNestedWords;
+    this.#runnerTraits = runnerTraits;
   }
 
   /**
@@ -387,12 +405,14 @@ export class CommandChecker {
       );
     } else if (name.includes('/') && !isPackageSpec(name)) {
       // Yarn v1 replaces `/` with `\` in some command names on Windows, which then run the `.cmd`
-      // file of a dependency's binary
+      // file of a dependency's binary. The trait is read last, as the analysis is only reused for
+      // runners with the same values of the traits that it read
       const isConverted =
-        context.convertsSlashes &&
+        context.runnerScript &&
         depth === 0 &&
         DEPENDENCY_BINARY.test(name) &&
-        YARN_COMMAND_START.test(context.source.slice(0, nameWord.pos));
+        isYarnCommandStart(context.source, nameWord.pos) &&
+        this.#runnerTraits.get('convertsSlashes');
 
       if (!isCrossSpawned && !isConverted) {
         covered.push(

@@ -17,6 +17,7 @@ export {
   setHas,
   slidingWindow,
   sortedArrayInsertionIndex,
+  sortedArrayInsertionIndexWith,
   substringAfterLast,
   substringBefore,
   toForwardSlashes,

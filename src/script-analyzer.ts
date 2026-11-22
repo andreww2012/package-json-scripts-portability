@@ -42,7 +42,7 @@ import {
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import {RedirectionChecker, doesRedirectOutput} from './redirection-checker.ts';
 import {Reporter, type RunnerIssue} from './reporter.ts';
-import {type Runner, type RunnerTraits, runnerBehavior, runnerTraits} from './runners.ts';
+import {type Runner, TraitsReader, runnerTraits} from './runners.ts';
 import {
   arrayIsSubset,
   mapGetOrInsertComputed,
@@ -189,7 +189,7 @@ class ScriptAnalyzer {
   constructor(
     length: number,
     commandOptions: CommandOptions,
-    traits: RunnerTraits,
+    traits: TraitsReader,
     parsedScripts: Map<string, ParsedScript>,
   ) {
     this.#parsedScripts = parsedScripts;
@@ -209,6 +209,7 @@ class ScriptAnalyzer {
       (words, context, nested) => {
         this.#analyzeNestedWords(words, context, nested);
       },
+      traits,
     );
   }
 
@@ -290,13 +291,13 @@ class ScriptAnalyzer {
     this.#depth++;
     this.analyzeSource({
       bashOptions,
-      convertsSlashes: false,
       covered: context.covered,
       crossEnv,
       fixExclusions: [...context.fixExclusions, exclusion],
       fixedRange,
       offset,
       portable: false,
+      runnerScript: false,
       shell,
       source: sources.join(' '),
     });
@@ -938,30 +939,34 @@ export const analyzeWithRunners = (
     dependencies: options.dependencies || [],
     ignoredCommands: new Set(options.ignoreCommands),
   };
-  // Runners that run the script the same way have the same issues, e.g. aube and pnpm
-  const issuesByBehavior = new Map<string, ReadonlyMap<string, RunnerIssue>>();
+  const analyses: {issues: ReadonlyMap<string, RunnerIssue>; traits: TraitsReader}[] = [];
 
   return new Map(
     runners.map((runner) => {
       const traits = runnerTraits(runner, options.shellEmulator || false);
-      const issues = mapGetOrInsertComputed(issuesByBehavior, runnerBehavior(traits), () => {
-        const analyzer = new ScriptAnalyzer(script.length, commandOptions, traits, parsedScripts);
+      // Runners that only differ in traits that an analysis didn't read have the same issues, e.g.
+      // npm and pnpm for a script without `$HOME`
+      const reused = analyses.find((analysis) => analysis.traits.matches(traits));
+      if (reused) {
+        return [runner, reused.issues];
+      }
 
-        analyzer.analyzeSource({
-          convertsSlashes: traits.convertsSlashes || false,
-          covered: new Set(),
-          crossEnv: false,
-          fixExclusions: [],
-          fixedRange: undefined,
-          offset: 0,
-          portable: traits.portableShell || false,
-          shell: 'native',
-          source: script,
-        });
-
-        return analyzer.issues;
+      const reader = new TraitsReader(traits);
+      const analyzer = new ScriptAnalyzer(script.length, commandOptions, reader, parsedScripts);
+      analyzer.analyzeSource({
+        covered: new Set(),
+        crossEnv: false,
+        fixExclusions: [],
+        fixedRange: undefined,
+        offset: 0,
+        portable: reader.get('portableShell') || false,
+        runnerScript: true,
+        shell: 'native',
+        source: script,
       });
 
+      const {issues} = analyzer;
+      analyses.push({issues, traits: reader});
       return [runner, issues];
     }),
   );

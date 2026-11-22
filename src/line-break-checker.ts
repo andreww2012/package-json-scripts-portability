@@ -2,7 +2,7 @@ import type {Command} from 'unbash';
 import {type Context, type Range, rangeInScript} from './context.ts';
 import {joinLinesFix} from './fixes.ts';
 import type {Reporter, RunnerIssue, ScriptFix} from './reporter.ts';
-import {slidingWindow} from './utils.ts';
+import {slidingWindow, sortedArrayInsertionIndexWith} from './utils.ts';
 
 const ONE_LINE_SUGGESTION = 'Put the command on one line instead.';
 
@@ -10,15 +10,23 @@ interface ReportedLineBreak {
   issue: RunnerIssue;
   /** Range of the line break in the analyzed script */
   range: Range;
-  /** The source that the line break is in */
-  source: string;
 }
+
+/** Checks whether an issue was dropped, e.g. in a platform fallback, which leaves no platforms */
+const isDropped = (issue: RunnerIssue) => issue.platforms.length === 0;
 
 /** Checks line breaks, after which cmd.exe ignores the rest of the script */
 export class LineBreakChecker {
   /**
-   * Reported line breaks, to report one per source and to skip them in nested scripts.
-   * Their issues may be dropped later, e.g. in a platform fallback
+   * The issue of the last line break reported in each source, to report one per source.
+   * The ones reported before it were dropped, or it wouldn't be reported
+   */
+  readonly #lastIssues = new Map<string, RunnerIssue>();
+
+  /**
+   * Reported line breaks sorted by where they start in the analyzed script, to skip them in nested
+   * scripts.
+   * The ones whose issues weren't dropped don't overlap, as an overlapping one isn't reported
    */
   readonly #lineBreaks: ReportedLineBreak[] = [];
   readonly #reporter: Reporter;
@@ -96,16 +104,8 @@ export class LineBreakChecker {
   ) {
     const lineBreak = {end: position + 1, pos: position};
     const range = rangeInScript(context, lineBreak);
-    const isReported = this.#lineBreaks.some(
-      (reported) =>
-        // Dropped issues are left without platforms
-        reported.issue.platforms.length > 0 &&
-        (reported.source === context.source ||
-          // e.g. in `concurrently "a` + line break + `b"`, which is reported for the outer script
-          (reported.range.pos < range.end && range.pos < reported.range.end)),
-    );
-
-    if (isReported) {
+    const lastIssue = this.#lastIssues.get(context.source);
+    if ((lastIssue && !isDropped(lastIssue)) || this.#isOverlapReported(range)) {
       return;
     }
 
@@ -122,8 +122,50 @@ export class LineBreakChecker {
     // The issue that was just reported
     const issue = this.#reporter.issues.at(-1);
     // A line break in a piece that was reported already doesn't count, e.g. in an `if` statement
-    if (issue && platforms.length > 0) {
-      this.#lineBreaks.push({issue, range, source: context.source});
+    if (!issue || platforms.length === 0) {
+      return;
     }
+
+    this.#lastIssues.set(context.source, issue);
+    this.#lineBreaks.splice(
+      sortedArrayInsertionIndexWith(this.#lineBreaks, (reported) => reported.range.pos < range.pos),
+      0,
+      {issue, range},
+    );
+  }
+
+  /**
+   * Checks whether a reported line break overlaps a range, e.g. in `concurrently "a` + line break +
+   * `b"`, which is reported for the outer script.
+   * Dropped line breaks are removed on the way.
+   * @param range The range in the analyzed script
+   * @returns Whether one does
+   */
+  #isOverlapReported(range: Range) {
+    const lineBreaks = this.#lineBreaks;
+    const end = sortedArrayInsertionIndexWith(
+      lineBreaks,
+      (reported) => reported.range.pos < range.end,
+    );
+
+    // Line breaks that weren't dropped don't overlap each other, so the ones before the last one
+    // that starts before the range ends also end before that one starts. If that one isn't empty
+    // and doesn't overlap the range, neither do they
+    for (let index = end - 1; index >= 0; index--) {
+      const reported = lineBreaks[index];
+      if (!reported) {
+        break;
+      }
+
+      if (isDropped(reported.issue)) {
+        lineBreaks.splice(index, 1);
+      } else if (range.pos < reported.range.end) {
+        return true;
+      } else if (reported.range.pos < reported.range.end) {
+        return false;
+      }
+    }
+
+    return false;
   }
 }

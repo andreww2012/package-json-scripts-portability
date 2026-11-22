@@ -24,7 +24,7 @@ import {
 } from './messages.ts';
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
-import type {RunnerTraits} from './runners.ts';
+import type {TraitsReader} from './runners.ts';
 import {setHas, substringAfterLast, toForwardSlashes} from './utils.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
@@ -192,19 +192,43 @@ const isTool = (command: string | undefined) => {
   return name != null && !OS_COMMANDS.has(name) && !CMD_STATEMENTS.has(name);
 };
 
+/** Whether `cross-env` can prefix each command, which all assignments of the command check */
+const crossEnvCommands = new WeakMap<Command, boolean>();
+
+/**
+ * Checks whether `cross-env` can prefix a command and take over its assignments.
+ * It needs a command with only plain assignments before it, and can't run shell builtins, e.g. `cd`
+ * in `A=1 cd x`.
+ * @param command The command
+ * @returns Whether it can
+ */
+const canPrefixWithCrossEnv = (command: Command) => {
+  const cached = crossEnvCommands.get(command);
+  if (cached != null) {
+    return cached;
+  }
+
+  const canPrefix =
+    command.name != null &&
+    command.prefix.every(isPlainAssignment) &&
+    !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '');
+  crossEnvCommands.set(command, canPrefix);
+  return canPrefix;
+};
+
 /** Walks a script that a word contains, e.g. in `$(...)` */
 type NestedScriptWalker = (script: Script, part: Range, context: Context) => void;
 
 /** Checks words, e.g. for quotes, expansions and paths */
 export class WordChecker {
   readonly #reporter: Reporter;
-  readonly #runnerTraits: RunnerTraits;
+  readonly #runnerTraits: TraitsReader;
   readonly #walkNestedScript: NestedScriptWalker;
 
   constructor(
     reporter: Reporter,
     walkNestedScript: NestedScriptWalker,
-    runnerTraits: RunnerTraits,
+    runnerTraits: TraitsReader,
   ) {
     this.#reporter = reporter;
     this.#walkNestedScript = walkNestedScript;
@@ -240,10 +264,7 @@ export class WordChecker {
             ? `The inline environment variable assignment \`${truncate(assignment.text)}\``
             : `The shell variable assignment \`${truncate(assignment.text)}\``,
         },
-        // `cross-env` can't run shell builtins, e.g. `cd` in `A=1 cd x`
-        command?.name &&
-          command.prefix.every(isPlainAssignment) &&
-          !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '')
+        command && canPrefixWithCrossEnv(command)
           ? {
               description: 'Prefix the command with `cross-env`.',
               edits: [{end: command.pos, pos: command.pos, text: 'cross-env '}],
@@ -289,7 +310,7 @@ export class WordChecker {
         node,
         'inconsistentBehavior',
         {
-          reason: `${this.#runnerTraits.label} doesn't set it`,
+          reason: `${this.#runnerTraits.get('label')} doesn't set it`,
           suggestion: NODE_SCRIPT_SUGGESTION,
           syntax: `The variable \`${text}\``,
         },
@@ -849,13 +870,20 @@ export class WordChecker {
 
   /** Checks whether Windows doesn't set a variable, so `cross-env` replaces it with nothing */
   #isUnsetOnWindows(name: string) {
-    return POSIX_ONLY_VARIABLES.has(name) || (name === 'HOME' && !this.#runnerTraits.setsHome);
+    return (
+      POSIX_ONLY_VARIABLES.has(name) || (name === 'HOME' && !this.#runnerTraits.get('setsHome'))
+    );
   }
 
   /** Checks whether a variable is one that package managers set, but the runner doesn't */
   #isMissingPackageManagerVariable(name: string) {
-    const variables = this.#runnerTraits.packageManagerVariables;
-    return variables != null && PACKAGE_MANAGER_VARIABLE.test(name) && !variables.has(name);
+    // Checked first, so that the trait is only read for these variables
+    if (!PACKAGE_MANAGER_VARIABLE.test(name)) {
+      return false;
+    }
+
+    const variables = this.#runnerTraits.get('packageManagerVariables');
+    return variables != null && !variables.has(name);
   }
 
   /** Gets what to use instead of a variable on Windows, where `cross-env` can't help for some */

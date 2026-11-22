@@ -1532,6 +1532,85 @@ describe('analyzeScript', () => {
         'Replace `rm -rf` with `rimraf`.',
       );
     });
+
+    // Runners share an analysis that didn't use the traits they differ in, whatever their order
+    describe.each<[string, Runner[]]>([
+      ['in order', ['aube', 'node', 'npm', 'pnpm', 'pnpm-10', 'upm', 'yarn', 'yarn-classic']],
+      [
+        'in reverse order',
+        ['yarn-classic', 'yarn', 'upm', 'pnpm-10', 'pnpm', 'npm', 'node', 'aube'],
+      ],
+      ['mixed', ['yarn-classic', 'npm', 'yarn', 'node', 'pnpm-10', 'upm', 'aube', 'pnpm']],
+    ])('with all runners %s', (_, runner) => {
+      /**
+       * Summarizes the issues like `summarizeRunners`, but sorted, and with sorted runners: their
+       * order follows the order of the runners in the options.
+       * @param script Script source to analyze
+       * @param options Options for the analysis
+       * @returns A compact representation of each issue
+       */
+      const summarizeSorted = (script: string, options: AnalyzeScriptOptions) =>
+        analyzeScript(script, {...options, runner})
+          .map(({end, messageId, platforms, pos, runners}) =>
+            [
+              messageId,
+              script.slice(pos, end),
+              platforms.join(','),
+              // eslint-disable-next-line unicorn/no-array-sort, sonar/no-misleading-array-reverse -- Sorts a new array
+              runners.sort().join(','),
+            ].join(' '),
+          )
+          .sort();
+
+      it.each<[string, AnalyzeScriptOptions, string[]]>([
+        // Yarn v1 replaces `/` with `\` in it, and Yarn's shell runs it
+        [
+          'node_modules/.bin/tsc',
+          {},
+          ['unsupportedSyntax node_modules/.bin/tsc win32 aube,node,npm,pnpm,pnpm-10,upm'],
+        ],
+        // npm and pnpm v10 set `HOME`, and Yarn's shell expands variables itself
+        [
+          'cross-env CONFIG=${HOME}/.config node x.js',
+          {},
+          ['inconsistentBehavior ${HOME} win32 aube,node,pnpm,upm,yarn-classic'],
+        ],
+        [
+          'cross-env CLI=$npm_execpath node x.js',
+          {},
+          [
+            'inconsistentBehavior $npm_execpath darwin,linux,win32 node',
+            'inconsistentBehavior $npm_execpath darwin,linux,win32 upm',
+          ],
+        ],
+        [
+          'a; b',
+          {shellEmulator: true},
+          ['unsupportedSyntax ; win32 aube,node,npm,upm,yarn-classic'],
+        ],
+        [
+          'node_modules/.bin/tsc && cross-env CONFIG=$HOME CLI=$npm_execpath node x.js; b',
+          {shellEmulator: true},
+          [
+            'inconsistentBehavior $HOME win32 aube,node,upm,yarn-classic',
+            'inconsistentBehavior $npm_execpath darwin,linux,win32 node',
+            'inconsistentBehavior $npm_execpath darwin,linux,win32 upm',
+            'unsupportedSyntax ; win32 aube,node,npm,upm,yarn-classic',
+            'unsupportedSyntax node_modules/.bin/tsc win32 aube,node,npm,upm',
+          ],
+        ],
+      ])('%j with %j', (script, options, expected) => {
+        expect(summarizeSorted(script, options)).toStrictEqual(expected);
+      });
+
+      it('names each runner in its reason', () => {
+        expect(
+          analyzeScript('cross-env CLI=$npm_execpath node x.js', {runner})
+            .map((issue) => `${issue.runners.join(',')}: ${issue.data.reason}`)
+            .sort(),
+        ).toStrictEqual(["node: `node --run` doesn't set it", "upm: upm doesn't set it"]);
+      });
+    });
   });
 
   describe('runner-agnostic scripts', () => {
@@ -1625,6 +1704,20 @@ describe('analyzeScript', () => {
       ],
       // Reported once, for the outer script
       ['concurrently "tsc\nvite"', [['unsupportedSyntax', '\n', 'win32']]],
+      // Once per source
+      ['concurrently "tsc\nvite" "tsc\nvite"', [['unsupportedSyntax', '\n', 'win32']]],
+      [
+        'concurrently "tsc\nvite" "jest\nvite"',
+        [
+          ['unsupportedSyntax', '\n', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
+      // `rd` runs instead of `rm` on Windows, so the line break is reported for the outer script
+      // instead of the nested one
+      ['concurrently "rm -rf \'a\nb\' || rd /s /q a"', [['unsupportedSyntax', '\n', 'win32']]],
+      // Also with escapes, where positions in the nested script can't be mapped
+      ['concurrently "rm -rf \\"a\nb\\" || rd /s /q a"', [['unsupportedSyntax', '\n', 'win32']]],
       // A line break in a statement that's reported already doesn't count
       [
         'if [ -d dist ]; then\nrimraf dist\nfi\ntsc',
@@ -1731,6 +1824,19 @@ describe('analyzeScript', () => {
     it.each<[string, Summary[]]>([
       ['./node_modules/.bin/eslint . && node_modules/.bin/tsc', []],
       ['tsc | ./node_modules/.bin/tee-cli log', []],
+      ['tsc || node_modules/.bin/x', []],
+      ['tsc & node_modules/.bin/x', [['inconsistentBehavior', '&', 'win32']]],
+      ['tsc&&node_modules/.bin/x', []],
+      ['  node_modules/.bin/x', []],
+      ['tsc &&\n\tnode_modules/.bin/x', [['unsupportedSyntax', '\n', 'win32']]],
+      // Not after `;`, which cmd.exe doesn't support either
+      [
+        'tsc; node_modules/.bin/x',
+        [
+          ['unsupportedSyntax', ';', 'win32'],
+          ['unsupportedSyntax', 'node_modules/.bin/x', 'win32'],
+        ],
+      ],
       // Not after `(`, and not in the scripts that other commands run
       [
         '(./node_modules/.bin/eslint .)',
@@ -2415,6 +2521,16 @@ describe('analyzeScript', () => {
           ['FORCE_COLOR=0', CROSS_ENV, 'cross-env CI=1 FORCE_COLOR=0 jest'],
         ],
       ],
+      [
+        'A=1 B=2 C=3 jest',
+        [
+          ['A=1', CROSS_ENV, 'cross-env A=1 B=2 C=3 jest'],
+          ['B=2', CROSS_ENV, 'cross-env A=1 B=2 C=3 jest'],
+          ['C=3', CROSS_ENV, 'cross-env A=1 B=2 C=3 jest'],
+        ],
+      ],
+      // Only a command with nothing but plain assignments before it gets `cross-env`
+      ['A=1 2>/dev/null B=2 jest', [['/dev/null', 'Remove `2>/dev/null`.', 'A=1 B=2 jest']]],
 
       // Quotes and escapes
       [
@@ -2613,6 +2729,7 @@ describe('analyzeScript', () => {
       '{ exec node x; } && tsc',
       // `cross-env` can't run shell builtins
       'A=1 cd x',
+      'A=1 B+=2 jest',
       'A=1 exec node x',
       'export A=1 && cd x',
       // In double quotes, the placeholder would be reported as a Windows variable

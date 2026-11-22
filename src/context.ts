@@ -25,12 +25,6 @@ export type SyntaxKind = 'bash' | 'bash4' | 'bashNonPosix' | 'posix';
 export interface Context {
   /** Bash options enabled with `bash -O` or `shopt -s`, e.g. `globstar` */
   bashOptions?: ReadonlySet<string>;
-
-  /**
-   * Whether the package manager replaces `/` with `\` in this piece's command names on Windows, as
-   * Yarn v1 does for the script itself
-   */
-  convertsSlashes: boolean;
   /** Platforms on which an enclosing piece of the script was already reported */
   covered: ReadonlySet<Platform>;
   /** Whether `cross-env` runs this piece, which replaces variables and removes single quotes */
@@ -53,6 +47,12 @@ export interface Context {
   outputRedirected?: boolean;
   /** Whether this piece runs in Yarn's portable shell */
   portable: boolean;
+
+  /**
+   * Whether this piece is in the script that the runner runs, rather than in a script nested in it,
+   * e.g. in `sh -c "..."`
+   */
+  runnerScript: boolean;
   shell: Shell;
   /** The source that node positions refer to */
   source: string;
