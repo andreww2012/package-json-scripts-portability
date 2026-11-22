@@ -17,6 +17,8 @@ updateConfig:
 minimumReleaseAge: 960 # 16 hours in minutes
 minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list instead of prompting or failing
 minimumReleaseAgeExcludePrune: true
+minimumReleaseAgeExclude: # []
+  - unbash@6.0.5
 
 trustPolicy: no-downgrade
 trustPolicyIgnoreAfter: 43200 # 30 days in minutes

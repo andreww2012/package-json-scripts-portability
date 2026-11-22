@@ -69,7 +69,7 @@
     "release": "changeset publish"
   },
   "dependencies": {
-    "unbash": "6.0.4"
+    "unbash": "6.0.5"
   },
   "devDependencies": {
     "@andreww2012/commitlint-config": "0.2.0",
