@@ -7,7 +7,7 @@ import {
   WINDOWS_PLATFORMS,
 } from './platforms.ts';
 import type {Runner} from './runners.ts';
-import {type OmitStrict, type ReadonlyDeep, clamp} from './utils.ts';
+import {type OmitStrict, type ReadonlyDeep, arrayIntersection, clamp} from './utils.ts';
 
 export type ScriptIssueMessageId =
   | 'inconsistentBehavior'
@@ -67,16 +67,76 @@ const SYNTAX_PLATFORMS: ReadonlyDeep<Record<SyntaxKind, Record<Shell, Platform[]
 };
 
 export class Reporter {
+  /**
+   * Reported issues, including duplicates: an issue may be dropped later, e.g. in a platform
+   * fallback, while its duplicate stays
+   */
   readonly issues: RunnerIssue[] = [];
+
+  /** Issues that make a command fail, e.g. `rm` on Windows, unlike ones in its arguments */
+  readonly #failures = new WeakSet<RunnerIssue>();
 
   /**
    * Length of the analyzed script, which `unbash`'s positions can exceed, e.g. after a trailing `\`
    */
   readonly #length: number;
-  readonly #seen = new Set<string>();
 
   constructor(length: number) {
     this.#length = length;
+  }
+
+  /** The issues without duplicates, each on the platforms of all of its duplicates */
+  get uniqueIssues() {
+    const unique = new Map<string, RunnerIssue>();
+    this.issues.forEach((issue) => {
+      const key = issueKey(issue);
+      const existing = unique.get(key);
+      unique.set(
+        key,
+        existing
+          ? {
+              ...existing,
+              platforms: arrayIntersection(PLATFORMS, [...existing.platforms, ...issue.platforms]),
+            }
+          : issue,
+      );
+    });
+    return [...unique.values()];
+  }
+
+  isFailure(issue: RunnerIssue) {
+    return this.#failures.has(issue);
+  }
+
+  /**
+   * Marks the issues reported since an index as ones that make a command fail.
+   * @param start Index of the first issue to mark
+   */
+  markFailures(start: number) {
+    this.issues.slice(start).forEach((issue) => {
+      this.#failures.add(issue);
+    });
+  }
+
+  /**
+   * Removes platforms from the issues reported since an index, and drops the issues that are left
+   * without platforms.
+   * @param start Index of the first issue to update
+   * @param platformsOf Gets the platforms to remove from an issue
+   */
+  removePlatforms(
+    start: number,
+    platformsOf: (issue: RunnerIssue) => ReadonlySet<Platform> | undefined,
+  ) {
+    this.issues.splice(start).forEach((issue) => {
+      const removed = platformsOf(issue);
+      if (removed) {
+        issue.platforms = issue.platforms.filter((platform) => !removed.has(platform));
+      }
+      if (issue.platforms.length > 0) {
+        this.issues.push(issue);
+      }
+    });
   }
 
   /**
@@ -119,20 +179,14 @@ export class Reporter {
     if (remaining.length > 0) {
       const range = rangeInScript(context, node);
       const pos = clamp(range.pos, 0, this.#length);
-      const end = clamp(range.end, pos, this.#length);
-      const key = issueKey({data, end, messageId, pos});
-
-      if (!this.#seen.has(key)) {
-        this.#seen.add(key);
-        this.issues.push({
-          data,
-          end,
-          fix: this.#mapFix(context, fix),
-          messageId,
-          platforms: remaining,
-          pos,
-        });
-      }
+      this.issues.push({
+        data,
+        end: clamp(range.end, pos, this.#length),
+        fix: this.#mapFix(context, fix),
+        messageId,
+        platforms: remaining,
+        pos,
+      });
     }
 
     return remaining;

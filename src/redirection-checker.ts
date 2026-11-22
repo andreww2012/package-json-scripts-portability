@@ -1,4 +1,4 @@
-import type {Command, Redirection} from 'unbash';
+import type {Command, RedirectOperator, Redirection} from 'unbash';
 import {type Context, bashLabel} from './context.ts';
 import {removal, replacement} from './fixes.ts';
 import {
@@ -17,6 +17,35 @@ import {POSIX_PATH, WHITESPACE, staticValue} from './words.ts';
 const DESCRIPTOR = /^(?:\d+|-)$/;
 /** Device names, which cmd.exe treats as the device in any directory */
 const WINDOWS_DEVICES: ReadonlySet<string> = new Set(['aux', 'con', 'nul', 'prn']);
+/** Redirection operators that write the standard output to a file, e.g. `>` */
+const OUTPUT_OPERATORS: ReadonlySet<RedirectOperator> = new Set([
+  '&>',
+  '&>>',
+  '>',
+  '>&',
+  '>>',
+  '>|',
+]);
+
+/**
+ * Checks whether a redirection writes the standard output to a file, e.g. `> out.log`, but not
+ * `>&2` or `2> err.log`.
+ * @param redirection The redirection
+ * @returns Whether it does
+ */
+export const doesRedirectOutput = (redirection: Redirection) => {
+  if (redirection.type !== 'Redirect' || !OUTPUT_OPERATORS.has(redirection.operator)) {
+    return false;
+  }
+
+  const {descriptor, operator, target} = redirection;
+  const value = target && staticValue(target);
+  return (
+    (descriptor == null || (descriptor.type === 'FileDescriptor' && descriptor.value === 1)) &&
+    // e.g. `>&2`, which duplicates a file descriptor instead
+    !(operator === '>&' && value != null && DESCRIPTOR.test(value))
+  );
+};
 
 /** Checks redirections, e.g. for Bash-specific operators and device files */
 export class RedirectionChecker {

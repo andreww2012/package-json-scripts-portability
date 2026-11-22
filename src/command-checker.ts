@@ -1,4 +1,4 @@
-import type {Statement, Word} from 'unbash';
+import type {CommandArgument, Redirection, Statement, Word} from 'unbash';
 import type {AnalyzeScriptOptions} from './analyze-script.ts';
 import {checkCommandUsage} from './command-usage.ts';
 import {
@@ -37,7 +37,11 @@ interface InvocationResult {
   target: string | undefined;
 }
 
-const MAX_DEPTH = 10;
+/**
+ * How many commands that run other commands are followed, e.g. `cross-env` in `cross-env A=1 rm`,
+ * and how deep nested scripts are analyzed, e.g. in `sh -c "..."`
+ */
+export const MAX_DEPTH = 10;
 
 /** Where Yarn v1 replaces `/` with `\` in a command's name: at the start and after an operator */
 const YARN_COMMAND_START = /(?:^|&&|&|\|\||\|)\s*$/;
@@ -62,6 +66,23 @@ const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
 
 /** Options of pnpm and aube that make the command and its arguments a shell line */
 const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
+
+/** A word of letters, digits and underscores, e.g. a variable name */
+const IDENTIFIER = /\w+/g;
+
+/**
+ * Checks whether a piece of a script mentions a variable that assignments set, e.g. `$PORT` for
+ * `PORT=3000`.
+ * @param text The piece of the script
+ * @param items The assignments, among other items of a command
+ * @returns Whether it does, even if only as a word that the shell doesn't expand
+ */
+const doesMentionVariables = (text: string, items: readonly (CommandArgument | Redirection)[]) => {
+  const names = new Set(
+    items.filter((item) => item.type === 'Assignment').map((assignment) => assignment.name),
+  );
+  return (text.match(IDENTIFIER) || []).some((word) => names.has(word));
+};
 
 /**
  * Finds the command that a command runs, e.g. `rm` in `cross-env A=1 rm -rf dist`.
@@ -138,8 +159,9 @@ export class CommandChecker {
   /**
    * Adds fixes for commands that end the script, which can change what follows them.
    * @param statements Top-level statements of a script
+   * @param source The script's source
    */
-  addPositionalFixes(statements: readonly Statement[]) {
+  addPositionalFixes(statements: readonly Statement[], source: string) {
     const last = statements.at(-1);
     if (!last || last.background) {
       return;
@@ -178,7 +200,10 @@ export class CommandChecker {
       exporting.suffix.length > 0 &&
       exporting.suffix.every(isPlainAssignment) &&
       command?.type === 'Command' &&
-      command.name
+      command.name &&
+      // The shell expands the command's variables before `cross-env` sets them, e.g. in
+      // `next dev -p $PORT`
+      !doesMentionVariables(source.slice(command.pos, command.end), exporting.suffix)
     ) {
       this.#positionalFixes.set(exporting.name, {
         description: 'Replace `export ... &&` with `cross-env`.',
@@ -286,6 +311,7 @@ export class CommandChecker {
       return result;
     }
 
+    const firstIssue = this.#reporter.issues.length;
     const covered: Platform[] = [];
 
     if (SHELL_SCRIPT.test(name)) {
@@ -342,6 +368,7 @@ export class CommandChecker {
     }
 
     covered.push(...this.#checkUsage(name, nameWord, argumentWords, context));
+    this.#reporter.markFailures(firstIssue);
 
     // The commands that it runs aren't reported on the platforms where it's reported already
     // Not `||`: the target of a command named `""` is empty

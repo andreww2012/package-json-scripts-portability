@@ -7,18 +7,29 @@ describe('getRunner', () => {
     // pnpm v10 and older set `HOME`
     ['pnpm', '10.0.0', 'pnpm-10'],
     ['pnpm', '^9.15.0', 'pnpm-10'],
+    ['pnpm', '10.0.0+sha512.abc', 'pnpm-10'],
+    ['pnpm', '<11', 'pnpm-10'],
+    ['pnpm', '>=9 <11', 'pnpm-10'],
     // Possibly pnpm v11+
     ['pnpm', '>=10', 'pnpm'],
+    ['pnpm', '9 - 11', 'pnpm'],
+    ['pnpm', '^9 || ^11', 'pnpm'],
+    ['pnpm', '10.x || >=11', 'pnpm'],
     ['pnpm', undefined, 'pnpm'],
+    ['pnpm', 'latest', 'pnpm'],
     ['aube', undefined, 'aube'],
     ['upm', '0.1.0', 'upm'],
     ['yarn', '1.22.22', 'yarn-classic'],
     ['yarn', '^1.22.0', 'yarn-classic'],
+    ['yarn', 'v1.22.0', 'yarn-classic'],
+    ['yarn', '<2', 'yarn-classic'],
     ['yarn', '4.5.0', 'yarn'],
     ['yarn', '>=2', 'yarn'],
     // Yarn v1 and v2+ run scripts differently
     ['yarn', undefined, undefined],
     ['yarn', 'latest', undefined],
+    ['yarn', '>=1', undefined],
+    ['yarn', '^1.22 || ^4', undefined],
     ['bun', '1.2.0', undefined],
     ['deno', undefined, undefined],
     // Not package managers
@@ -27,6 +38,14 @@ describe('getRunner', () => {
     ['yarn-classic', undefined, undefined],
   ])('gets the runner for %s %s', (name, version, expected) => {
     expect(getRunner(name, version)).toBe(expected);
+  });
+
+  it('treats an overly long version range as unknown', () => {
+    const range = `${'^10 || '.repeat(100)}^10`;
+
+    expect(getRunner('pnpm', '^10 || ^10')).toBe('pnpm-10');
+    expect(getRunner('pnpm', range)).toBe('pnpm');
+    expect(getRunner('yarn', range)).toBeUndefined();
   });
 });
 

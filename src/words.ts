@@ -14,8 +14,11 @@ const SHORT_OPTION_CLUSTER = /^-[a-z]+$/i;
 export const isShortOptionCluster = (value: string | undefined, letter: string) =>
   value != null && SHORT_OPTION_CLUSTER.test(value) && value.includes(letter);
 
-/** A tilde expansion at the start of a word, e.g. `~/.npmrc` */
-export const TILDE_EXPANSION = /^~[\w\-.]*(?:\/|$)/;
+/**
+ * A tilde expansion at the start of a word, e.g. `~/.npmrc`.
+ * With a digit after `~`, it's a version range, e.g. `~1.2.3`, which shells keep as it is
+ */
+export const TILDE_EXPANSION = /^~(?!\d)[\w\-.]*(?:\/|$)/;
 
 /** Characters that POSIX shells interpret in double quotes, e.g. `$` */
 export const DOUBLE_QUOTED_SPECIAL_CHARACTERS = /["$\\`]/;

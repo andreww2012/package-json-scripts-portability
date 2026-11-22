@@ -204,8 +204,8 @@ Runner-agnostic scripts aren't checked with `node --run`, since it doesn't insta
 - `formatPlatforms(platforms)` formats platforms for people, e.g. `'macOS, Linux, and Windows'`.
 - `formatRunners(runners)` formats runners for people, e.g. `'pnpm and Yarn v1'`.
 - `getRunner(name, version?)` gets the `runner` value for a package manager, e.g. from the `packageManager` or `devEngines.packageManager` field: `getRunner('yarn', '1.22.22')` is `'yarn-classic'`.
-  It returns `undefined` for other package managers, like Bun, and for Yarn without a version, since Yarn v1 and v2+ run scripts differently.
-  For pnpm, it returns `'pnpm-10'` for v10 and older, and `'pnpm'` otherwise, including for no version and for ranges like `>=10`, which allow v11+.
+  It returns `undefined` for other package managers, like Bun, and for Yarn without a version or with a range that allows both v1 and v2+, like `>=1`, since they run scripts differently.
+  For pnpm, it returns `'pnpm-10'` for v10 and older, and `'pnpm'` otherwise, including for no version and for ranges like `>=10` or `^9 || ^11`, which allow v11+.
 - `PLATFORMS` is the list of all platforms: `['darwin', 'linux', 'win32']`.
 - `RUNNER_AGNOSTIC_SCRIPTS` is the set of the scripts that are runner-agnostic by default: `preinstall`, `install`, `postinstall` and `prepare`.
 - `RUNNERS` is the list of all `runner` values: `['aube', 'node', 'npm', 'pnpm', 'pnpm-10', 'upm', 'yarn', 'yarn-classic']`.

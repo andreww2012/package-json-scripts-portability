@@ -94,7 +94,12 @@ const HEAD_COUNT_OPTION = /^-[cn]$/;
 /** e.g. `-n-1` */
 const HEAD_NEGATIVE_COUNT_OPTION = /^-[cn]-\d/;
 const NEGATIVE_NUMBER = /^-\d/;
-const SED_EXTENDED_OPTION = /^-[a-z]*[er]/i;
+
+/**
+ * `-E` or `-r`, also in a cluster like `-nE`, but not after an option that takes the rest of the
+ * cluster as its value, like `-e` (a script) or `-i` (a backup suffix)
+ */
+const SED_EXTENDED_OPTION = /^-(?:(?![Iefil])[A-Za-z])*[Er]/; // cspell:disable-line
 const SED_IN_PLACE_OPTION = /^-[a-z]*i$/i;
 /** `set -o`, possibly after other options, e.g. `set -euo` */
 const SET_NAMED_OPTION = /^-[a-z]*o$/i;

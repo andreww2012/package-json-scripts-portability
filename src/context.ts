@@ -49,6 +49,8 @@ export interface Context {
   fixedRange: Range | undefined;
   /** Offset of `source` in the analyzed script */
   offset: number;
+  /** Whether the output of this piece goes into a file or a pipe instead of the terminal */
+  outputRedirected?: boolean;
   /** Whether this piece runs in Yarn's portable shell */
   portable: boolean;
   shell: Shell;

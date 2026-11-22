@@ -15,7 +15,7 @@ import {
   parse,
 } from 'unbash';
 import type {AnalyzeScriptOptions} from './analyze-script.ts';
-import {CommandChecker, type NestedWordsOptions} from './command-checker.ts';
+import {CommandChecker, MAX_DEPTH, type NestedWordsOptions} from './command-checker.ts';
 import {SHELLS, SHELL_STATE_COMMANDS} from './commands.ts';
 import {
   type Context,
@@ -35,17 +35,18 @@ import {
   truncate,
 } from './messages.ts';
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
-import {RedirectionChecker} from './redirection-checker.ts';
-import {Reporter} from './reporter.ts';
+import {RedirectionChecker, doesRedirectOutput} from './redirection-checker.ts';
+import {Reporter, type RunnerIssue} from './reporter.ts';
 import {type Runner, type RunnerTraits, runnerTraits} from './runners.ts';
 import {arrayIsSubset, mapGetOrInsertComputed, substringBefore} from './utils.ts';
-import {WordChecker} from './word-checker.ts';
-import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE} from './words.ts';
+import {CMD_STATEMENTS, WordChecker} from './word-checker.ts';
+import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE, staticValue} from './words.ts';
 
 /** A `#` comment after a word boundary */
 const COMMENT = /(?:^|[\s&;|])(#.*)/;
-/** A glob of script names that `concurrently` expands, e.g. `npm run watch:*(!css)` */
-const SCRIPT_GLOB = /((?:bun|npm|pnpm|yarn) run|node --run|deno task) (\S*\*\S*)/;
+const COMMENTS = new RegExp(COMMENT, 'g');
+/** Globs of script names that `concurrently` expands, e.g. `npm run watch:*(!css)` */
+const SCRIPT_GLOBS = /((?:bun|npm|pnpm|yarn) run|node --run|deno task) (\S*\*\S*)/g;
 /** `shopt -s globstar`, which makes `**` recursive in the following commands */
 const SHOPT_GLOBSTAR = /\bshopt\s+-s\s+(?:\w+\s+)*globstar\b/;
 /** The rest of a script that only closes subshells */ // cspell:disable-line
@@ -54,6 +55,7 @@ const WINDOWS_BATCH_SYNTAX =
   /\bif\s+(?:\/i\s+)?(?:not\s+)?(?:defined|errorlevel|exist)\b|\bfor\s+(?:\/[a-z]\s+)*%%?[a-z]\b/gi;
 const SINGLE_QUOTE = /'/;
 const ANY_CHARACTER = /[\s\S]/;
+const NO_PLATFORMS: ReadonlySet<Platform> = new Set();
 
 const doesChangeDirectory = (node: AndOr | PipelineNode) => {
   switch (node.type) {
@@ -133,7 +135,7 @@ const nestedSource = (parts: readonly (DoubleQuotedChild | WordPart)[]): string 
  * Finds the end of a run of `||` alternatives that each break on some platform, but together work
  * on all platforms, e.g. `open x || xdg-open x || start x`.
  * @param node The list that the alternatives are in
- * @param platformsOf Gets the platforms on which a command of the list doesn't work
+ * @param platformsOf Gets the platforms on which a command of the list fails
  * @param first Index of the run's first command
  * @returns Index of the run's last command, if there's such a run
  */
@@ -166,11 +168,11 @@ const findFallbackEnd = (
 
 class ScriptAnalyzer {
   readonly #commands: CommandChecker;
+  /** How many scripts the analyzed source is nested in, e.g. 1 in `sh -c "..."` */
+  #depth = 0;
   readonly #lineBreaks: LineBreakChecker;
   /** Parsed sources of the script and of the scripts nested in it, e.g. in `sh -c "..."` */
   readonly #parsedScripts: Map<string, ParsedScript>;
-  /** Commands whose output goes into a pipe */
-  readonly #pipedCommands = new Set<PipelineNode>();
   readonly #redirections: RedirectionChecker;
   readonly #reporter: Reporter;
   readonly #words: WordChecker;
@@ -198,7 +200,7 @@ class ScriptAnalyzer {
   }
 
   get issues() {
-    return this.#reporter.issues;
+    return this.#reporter.uniqueIssues;
   }
 
   analyzeSource(context: Context) {
@@ -210,7 +212,7 @@ class ScriptAnalyzer {
       return;
     }
 
-    this.#commands.addPositionalFixes(script.commands);
+    this.#commands.addPositionalFixes(script.commands, context.source);
 
     const doesEnableGlobstar = context.shell === 'bash' && SHOPT_GLOBSTAR.test(context.source);
     const scriptContext = doesEnableGlobstar
@@ -226,11 +228,17 @@ class ScriptAnalyzer {
     context: Context,
     {bashOptions, crossEnv, maskScriptGlobs = false, shell}: NestedWordsOptions,
   ) {
+    // Real scripts aren't nested deeper, and analyzing such nesting is slow and can overflow the
+    // stack
+    if (this.#depth >= MAX_DEPTH) {
+      return;
+    }
+
     const sources = words.map((word) => {
       const source = word.parts ? nestedSource(word.parts) : word.value;
       return maskScriptGlobs
-        ? source.replace(
-            SCRIPT_GLOB,
+        ? source.replaceAll(
+            SCRIPT_GLOBS,
             (_, command: string, glob: string) => `${command} ${'_'.repeat(glob.length)}`,
           )
         : source;
@@ -266,6 +274,7 @@ class ScriptAnalyzer {
       });
     }
 
+    this.#depth++;
     this.analyzeSource({
       bashOptions,
       convertsSlashes: false,
@@ -278,6 +287,7 @@ class ScriptAnalyzer {
       shell,
       source: sources.join(' '),
     });
+    this.#depth--;
   }
 
   #checkComments(statements: readonly Statement[], context: Context) {
@@ -287,24 +297,27 @@ class ScriptAnalyzer {
     [...statements, undefined].forEach((statement, index) => {
       // Not `||`: the first statement can start at 0
       const end = statement?.pos ?? context.source.length;
-      const match = COMMENT.exec(context.source.slice(position, end));
-      const comment = match?.[1];
+      const gap = context.source.slice(position, end);
 
-      if (match && comment != null) {
-        const start = position + match.index + match[0].length - comment.length;
-        const commentEnd = start + comment.length;
-        this.#reporter.reportSyntax(
-          context,
-          {end: commentEnd, pos: start},
-          'posix',
-          false,
-          'unsupportedSyntax',
-          {suggestion: 'Remove it instead.', syntax: 'The `#` comment'},
-          {
-            description: 'Remove the comment.',
-            edits: [removal(context.source, start, commentEnd)],
-          },
-        );
+      // Most gaps have no comments, and `matchAll` is much slower than this check
+      if (gap.includes('#')) {
+        gap.matchAll(COMMENTS).forEach((match) => {
+          const [text, comment = ''] = match;
+          const start = position + match.index + text.length - comment.length;
+          const commentEnd = start + comment.length;
+          this.#reporter.reportSyntax(
+            context,
+            {end: commentEnd, pos: start},
+            'posix',
+            false,
+            'unsupportedSyntax',
+            {suggestion: 'Remove it instead.', syntax: 'The `#` comment'},
+            {
+              description: 'Remove the comment.',
+              edits: [removal(context.source, start, commentEnd)],
+            },
+          );
+        });
       }
 
       position = statement
@@ -331,11 +344,22 @@ class ScriptAnalyzer {
     return Math.max(statement.end, ...hereDocumentEnds);
   }
 
-  #checkWindowsBatchSyntax(context: Context) {
-    context.source.matchAll(WINDOWS_BATCH_SYNTAX).forEach((match) => {
+  /**
+   * Reports cmd.exe syntax, e.g. `if exist`.
+   * @param context Where to look for it
+   * @param pos Where to start looking in the source
+   * @param end Where to stop looking in the source
+   * @returns Whether it was found
+   */
+  #checkWindowsBatchSyntax(context: Context, pos = 0, end = context.source.length) {
+    const firstIssue = this.#reporter.issues.length;
+    const matches = [...context.source.slice(pos, end).matchAll(WINDOWS_BATCH_SYNTAX)];
+
+    matches.forEach((match) => {
+      const start = pos + match.index;
       this.#reporter.report(
         context,
-        {end: match.index + match[0].length, pos: match.index},
+        {end: start + match[0].length, pos: start},
         'unsupportedSyntax',
         {
           suggestion: NODE_SCRIPT_SUGGESTION,
@@ -344,6 +368,10 @@ class ScriptAnalyzer {
         context.portable ? PLATFORMS : POSIX_PLATFORMS,
       );
     });
+    // POSIX shells fail to run it, e.g. in `rm -rf dist || IF EXIST dist rd /s /q dist`
+    this.#reporter.markFailures(firstIssue);
+
+    return matches.length > 0;
   }
 
   /**
@@ -353,13 +381,20 @@ class ScriptAnalyzer {
    * issues
    */
   #dropPlatformFallbacks(node: AndOr, starts: readonly number[]) {
-    const platformsOf = (index: number) =>
-      new Set(
-        this.#reporter.issues
-          .slice(starts[index], starts[index + 1])
-          .flatMap((issue) => issue.platforms),
-      );
-    const dropped: [start: number, end: number][] = [];
+    const issuesOf = (index: number) =>
+      this.#reporter.issues.slice(starts[index], starts[index + 1]);
+    // Where each alternative fails, e.g. as its command isn't available, unlike where only its
+    // arguments have issues, like `$OUT` in `tsc --outDir $OUT || rd /s /q out`
+    const failingPlatforms = node.commands.map(
+      (_, index) =>
+        new Set(
+          issuesOf(index)
+            .filter((issue) => this.#reporter.isFailure(issue))
+            .flatMap((issue) => issue.platforms),
+        ),
+    );
+    const platformsOf = (index: number) => failingPlatforms[index] || NO_PLATFORMS;
+    const runs: [first: number, last: number][] = [];
 
     let first = 0;
     while (first < node.commands.length) {
@@ -368,19 +403,27 @@ class ScriptAnalyzer {
         first++;
       } else {
         // Later alternatives are still reported, e.g. `true` in `rm ... || rmdir /s ... || true`
-        dropped.push([first, last]);
+        runs.push([first, last]);
         first = last + 1;
       }
     }
 
-    // eslint-disable-next-line sonar/no-misleading-array-reverse -- False positive
-    dropped.reverse().forEach(([runStart, runEnd]) => {
-      const start = starts[runStart];
-      const end = starts[runEnd + 1];
-      if (start != null && end != null) {
-        this.#reporter.issues.splice(start, end - start);
+    // Where an alternative fails, the next one runs, but its issues still apply elsewhere, e.g.
+    // `**/` in `rm -rf **/x || rd /s /q x` on macOS and Linux
+    const removedPlatforms = new Map<RunnerIssue, ReadonlySet<Platform>>();
+    runs.forEach(([runStart, runEnd]) => {
+      for (let index = runStart; index <= runEnd; index++) {
+        const platforms = platformsOf(index);
+        issuesOf(index).forEach((issue) => {
+          removedPlatforms.set(issue, platforms);
+        });
       }
     });
+
+    const [start] = starts;
+    if (start != null && removedPlatforms.size > 0) {
+      this.#reporter.removePlatforms(start, (issue) => removedPlatforms.get(issue));
+    }
   }
 
   #walkCommand(node: AndOr | PipelineNode, context: Context) {
@@ -533,7 +576,10 @@ class ScriptAnalyzer {
       }
 
       case 'Redirected': {
-        this.#walkCommand(node.command, context);
+        this.#walkCommand(
+          node.command,
+          node.redirects.some(doesRedirectOutput) ? {...context, outputRedirected: true} : context,
+        );
         node.redirects.forEach((redirection) => {
           this.#redirections.checkRedirection(redirection, context);
         });
@@ -645,16 +691,25 @@ class ScriptAnalyzer {
       );
     });
 
-    node.commands.slice(0, -1).forEach((command) => {
-      this.#pipedCommands.add(command);
-    });
-    node.commands.forEach((command) => {
-      this.#walkCommand(command, context);
+    const pipedContext = {...context, outputRedirected: true};
+    node.commands.forEach((command, index) => {
+      this.#walkCommand(command, index < node.commands.length - 1 ? pipedContext : context);
     });
     this.#lineBreaks.checkOperatorLineBreaks(node.commands, context);
   }
 
   #walkSimpleCommand(node: Command, context: Context) {
+    // POSIX shells parse cmd.exe statements with uppercase keywords as commands, e.g. `IF` in
+    // `IF EXIST dist rd /s /q dist`, so they're checked like unparsable scripts
+    const name = node.name && staticValue(node.name);
+    if (
+      name != null &&
+      CMD_STATEMENTS.has(name.toLowerCase()) &&
+      this.#checkWindowsBatchSyntax(context, node.pos, node.end)
+    ) {
+      return;
+    }
+
     const isRedirection = node.name == null && node.prefix.length + node.suffix.length === 1;
 
     node.prefix.forEach((item) => {
@@ -695,8 +750,8 @@ class ScriptAnalyzer {
 
     const isPrintedToTerminal =
       invocation?.target === 'echo' &&
-      node.redirects.length === 0 &&
-      !this.#pipedCommands.has(node);
+      !context.outputRedirected &&
+      !node.redirects.some(doesRedirectOutput);
 
     node.suffix.forEach((item) => {
       if (item.type === 'Assignment') {
@@ -745,7 +800,6 @@ class ScriptAnalyzer {
       if (statement.background) {
         const position = context.source.lastIndexOf('&', statement.end - 1);
         backgroundOperators.push({end: position + 1, pos: position});
-        return;
       }
 
       const next = statements.at(index + 1);
@@ -763,7 +817,7 @@ class ScriptAnalyzer {
 
       if (semicolon !== -1) {
         const range = {end: gapStart + semicolon + 1, pos: gapStart + semicolon};
-        this.#reporter.reportSyntax(
+        const platforms = this.#reporter.reportSyntax(
           context,
           range,
           'posix',
@@ -772,12 +826,20 @@ class ScriptAnalyzer {
           {suggestion: 'Use `&&` instead.', syntax: 'The `;` command separator'},
           semicolonFix(range, gap, next),
         );
-      } else if (next && gap.includes('\n')) {
+        // Where `;` is supported, a line break after it may still not be, e.g. in Yarn's shell
+        if (platforms.length > 0) {
+          return;
+        }
+      }
+
+      if (next && gap.includes('\n')) {
         this.#lineBreaks.reportLineBreak(
           context,
           gapStart + gap.indexOf('\n'),
-          'Join the commands with `&&` instead.',
-          lineBreakFix(gapStart, gap, next),
+          statement.background
+            ? 'Put the commands on one line instead.'
+            : 'Join the commands with `&&` instead.',
+          semicolon === -1 ? lineBreakFix(gapStart, gap, statement, next) : undefined,
         );
       }
     });

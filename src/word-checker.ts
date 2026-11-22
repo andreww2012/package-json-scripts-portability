@@ -95,7 +95,7 @@ const POSIX_ONLY_VARIABLES: ReadonlySet<string> = new Set([
 const PACKAGE_MANAGER_VARIABLE = /^(?:npm_\w+|INIT_CWD)$/;
 
 /** cmd.exe statements, which POSIX shells parse as commands, e.g. `IF` in `IF EXIST dist ...` */
-const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
+export const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
 
 /** Characters that cmd.exe splits words at or interprets */
 const CMD_SPECIAL_CHARACTERS = /[\s"%&<>^|]/;

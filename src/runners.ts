@@ -1,5 +1,12 @@
 import {listFormat} from './messages.ts';
-import {allUnionMembers, arrayDifference, arrayIntersection, setHas} from './utils.ts';
+import {
+  allUnionMembers,
+  arrayDifference,
+  arrayIntersection,
+  isSemverInRange,
+  parseSemver,
+  setHas,
+} from './utils.ts';
 
 /** What can run the scripts: a package manager, or `node` for `node --run` */
 export type Runner = 'aube' | 'node' | 'npm' | 'pnpm' | 'pnpm-10' | 'upm' | 'yarn' | 'yarn-classic';
@@ -115,10 +122,47 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
 /** Package managers whose runner always has the same name, i.e. all of them but pnpm and Yarn */
 const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'upm']);
 
-/** The first number of a version or a version range, e.g. `1` in `^1.22.0` */
-const MAJOR_VERSION = /\d+/;
-/** A version range without an upper bound, e.g. `>=10`, which includes later major versions */
-const UNBOUNDED_RANGE = /^\s*>/;
+/** A version in a version range, e.g. `1.22` in `^1.22 || ^4` */
+const RANGE_VERSIONS = /\d+(?:\.\d+){0,2}/g;
+/** Longer versions and version ranges are unknown: checking them takes too long */
+const MAX_VERSION_CHARACTERS = 256;
+
+/**
+ * Gets major versions that a version or a version range matches, enough to tell whether it matches
+ * versions before a major version, and versions from it on.
+ * @param version A version, e.g. `1.22.22`, or a version range, e.g. `^1.22 || ^4`
+ * @param major The major version, e.g. `2`
+ * @returns The major versions, or none for an unknown version, e.g. `latest`
+ */
+const matchedMajors = (version: string, major: number) => {
+  if (version.length > MAX_VERSION_CHARACTERS) {
+    return [];
+  }
+
+  const exact = parseSemver(version);
+  if (exact) {
+    return [exact.major];
+  }
+
+  // A range matches intervals of versions, so it's enough to check 0.0.0, the major version, and
+  // each version of the range along with the ones right after it, e.g. 2.0.0 for `>1`
+  const candidates = [
+    [0, 0, 0],
+    [major, 0, 0],
+    ...[...version.matchAll(RANGE_VERSIONS)].flatMap(([text]) => {
+      const [first = 0, second = 0, third = 0] = text.split('.').map(Number);
+      return [
+        [first, second, third],
+        [first, second, third + 1],
+        [first, second + 1, 0],
+        [first + 1, 0, 0],
+      ];
+    }),
+  ];
+  return candidates
+    .filter((candidate) => isSemverInRange(candidate.join('.'), version))
+    .map(([candidateMajor = 0]) => candidateMajor);
+};
 
 /**
  * Gets the runner for a package manager, e.g. the one in the `packageManager` or
@@ -130,19 +174,22 @@ const UNBOUNDED_RANGE = /^\s*>/;
  * version
  */
 export const getRunner = (name: string, version = '') => {
-  const major = Number(MAJOR_VERSION.exec(version)?.[0]);
-
   if (name === 'pnpm') {
     // Unknown versions and ranges like `>=10` may be pnpm v11+, which doesn't set `HOME`
-    return major <= 10 && !UNBOUNDED_RANGE.test(version) ? 'pnpm-10' : 'pnpm';
+    const majors = matchedMajors(version, 11);
+    return majors.length > 0 && majors.every((major) => major <= 10) ? 'pnpm-10' : 'pnpm';
   }
   if (name !== 'yarn') {
     return setHas(SAME_NAME_RUNNERS, name) ? name : undefined;
   }
-  if (major === 1) {
-    return 'yarn-classic';
+
+  // A range like `>=1` may be either Yarn v1 or Yarn v2+
+  const majors = matchedMajors(version, 2);
+  const isClassic = majors.some((major) => major <= 1);
+  if (isClassic === majors.some((major) => major >= 2)) {
+    return undefined;
   }
-  return major >= 2 ? 'yarn' : undefined;
+  return isClassic ? 'yarn-classic' : 'yarn';
 };
 
 /**

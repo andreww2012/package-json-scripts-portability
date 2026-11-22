@@ -79,7 +79,7 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, readonly RunnerIssue[]>
  * @returns The issues found, with offsets relative to the script
  */
 export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}) => {
-  if (COMMENT_LINE.test(script)) {
+  if (COMMENT_LINE.test(script.trimEnd())) {
     return [];
   }
 

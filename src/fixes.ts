@@ -14,6 +14,7 @@ const JAVASCRIPT_FILE = /\.[cm]?js$/;
 /** A brace expansion of plain alternatives, e.g. `{a,b}` */
 const SIMPLE_BRACE_EXPANSION = /^\{([\w+\-./@]*(?:,[\w+\-./@]*)+)\}$/;
 const PLAIN_TEXT = /^[\w+\-./:=@]*$/;
+const JOIN_LINES_DESCRIPTION = 'Join the lines.';
 
 /** Creates a fix that replaces a piece of the script */
 export const replacement = (node: Range, original: string, text: string): ScriptFix => ({
@@ -198,42 +199,66 @@ const canChain = (next: Statement) =>
   !next.background && !(next.command.type === 'AndOr' && next.command.operators.includes('||'));
 
 /**
- * Gets a fix for a line break that separates commands.
- * @param gapStart Where the text between the commands starts
- * @param gap The text between the commands, including the line break
+ * Gets a fix for a line break that separates statements.
+ * @param gapStart Where the text between the statements starts, after the bodies of the first
+ * statement's here-documents
+ * @param gap The text between the statements, including the line break
+ * @param statement The statement before the line break
  * @param next The statement that follows it
  * @returns The fix, if the text is only whitespace and the rest of the logic stays the same
  */
 export const lineBreakFix = (
   gapStart: number,
   gap: string,
+  statement: Statement,
   next: Statement,
-): ScriptFix | undefined =>
-  gap.trim().length === 0 && canChain(next)
+): ScriptFix | undefined => {
+  // A here-document's closing line must stay on its own
+  if (gap.trim().length > 0 || gapStart !== statement.end) {
+    return undefined;
+  }
+
+  // `a &` and `b` on the next line are the same as `a & b`
+  if (statement.background) {
+    return {
+      description: JOIN_LINES_DESCRIPTION,
+      edits: [{end: next.pos, pos: gapStart, text: ' '}],
+    };
+  }
+
+  return canChain(next)
     ? {
         description: 'Replace the line break with `&&`, which stops at the first failing command.',
         edits: [{end: next.pos, pos: gapStart, text: ' && '}],
       }
     : undefined;
+};
 
 /**
  * Gets a fix that joins the lines of a command, e.g. after `||` or a `\` line continuation.
  * @param source The source that the command is in
  * @param position Where the line break is
- * @param end Where the whitespace after the line break ends
- * @returns The fix, which keeps the command the same in POSIX shells
+ * @param end Where the text after the line break ends, e.g. the indentation of the next line
+ * @returns The fix, which keeps the command the same in POSIX shells, if it only removes whitespace
+ * or a `\` line continuation
  */
-export const joinLinesFix = (source: string, position: number, end: number): ScriptFix => {
+export const joinLinesFix = (
+  source: string,
+  position: number,
+  end: number,
+): ScriptFix | undefined => {
   // `\` and the line break are removed in POSIX shells, without adding a space
-  const isContinuation = source[position - 1] === '\\';
-  return {
-    description: 'Join the lines.',
-    edits: [
-      isContinuation
-        ? {end: position + 1, pos: position - 1, text: ''}
-        : {end, pos: position, text: ' '},
-    ],
-  };
+  if (source[position - 1] === '\\') {
+    return {
+      description: JOIN_LINES_DESCRIPTION,
+      edits: [{end: position + 1, pos: position - 1, text: ''}],
+    };
+  }
+
+  // Other text can't be removed, e.g. the body of a here-document
+  return source.slice(position, end).trim().length === 0
+    ? {description: JOIN_LINES_DESCRIPTION, edits: [{end, pos: position, text: ' '}]}
+    : undefined;
 };
 
 /**

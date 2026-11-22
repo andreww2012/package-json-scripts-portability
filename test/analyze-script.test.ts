@@ -550,6 +550,15 @@ describe('analyzeScript', () => {
         ],
       ],
       ['if not exist dist mkdir dist', [['unsupportedSyntax', 'if not exist', 'darwin,linux']]],
+      // POSIX shells parse them as commands
+      ['IF EXIST dist rd /s /q dist', [['unsupportedSyntax', 'IF EXIST', 'darwin,linux']]],
+      ['IF NOT EXIST dist mkdir dist', [['unsupportedSyntax', 'IF NOT EXIST', 'darwin,linux']]],
+      ['If Exist dist del /q dist', [['unsupportedSyntax', 'If Exist', 'darwin,linux']]],
+      [
+        String.raw`IF EXIST .\dist RMDIR /Q /S .\dist`,
+        [['unsupportedSyntax', 'IF EXIST', 'darwin,linux']],
+      ],
+      ['IF x', []],
       [
         'echo %CD% %npm_package_version%',
         [
@@ -587,6 +596,7 @@ describe('analyzeScript', () => {
       ['cross-env-shell rm -rf $DIR', [['unsupportedCommand', 'rm -rf $DIR', 'win32']]],
       // It expands globs of script names itself
       ['concurrently "npm run watch:*(!css)" "npm:build"', []],
+      ['concurrently "npm run a:*(!x) && npm run b:*(!y)" "z w"', []],
       [
         'concurrently "npm run test:*(!e2e) && rm -rf tmp"',
         [['unsupportedCommand', 'rm', 'win32']],
@@ -685,6 +695,16 @@ describe('analyzeScript', () => {
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
+
+    it.each(['cross-env-shell ', 'pnpm exec -c '])(
+      "doesn't analyze scripts nested too deeply in %j",
+      (command) => {
+        expect(summarize(`${command.repeat(10)}rm -rf dist`)).toStrictEqual([
+          ['unsupportedCommand', `${command.repeat(9)}rm -rf dist`, 'win32'],
+        ]);
+        expect(summarize(`${command.repeat(800)}rm -rf dist`)).toStrictEqual([]);
+      },
+    );
   });
 
   describe('exec commands of package managers', () => {
@@ -759,6 +779,14 @@ describe('analyzeScript', () => {
           ['unsupportedSyntax', '# comment', 'win32'],
         ],
       ],
+      [
+        'a\n# c1\n# c2\nb',
+        [
+          ['unsupportedSyntax', '\n', 'win32'],
+          ['unsupportedSyntax', '# c1', 'win32'],
+          ['unsupportedSyntax', '# c2', 'win32'],
+        ],
+      ],
       ['node "a#b" a#b', []],
       ['git log --format=%H#%s', []],
       // A `;` in a comment doesn't separate commands
@@ -803,6 +831,8 @@ describe('analyzeScript', () => {
           ['unsupportedSyntax', '~/x', 'win32'],
         ],
       ],
+      // A version range rather than a tilde expansion
+      ['semver -r ~1.2.3 1.2.4', []],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -1143,12 +1173,14 @@ describe('analyzeScript', () => {
       ],
       ['coproc { a; }', [['unsupportedSyntax', 'coproc', 'darwin,linux,win32']]],
       ['# Only a comment', []],
+      ['# Only a comment \n\n', []],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
 
     it.each<[string, Summary[]]>([
       ['if exist dist del dist', [['unsupportedSyntax', 'if exist', 'darwin,linux,win32']]],
+      ['IF EXIST dist del dist', [['unsupportedSyntax', 'IF EXIST', 'darwin,linux,win32']]],
       ['echo %CD%', [['unsupportedSyntax', '%CD%', 'darwin,linux,win32']]],
       ['echo ${A:+x} ${A-x}', [['unsupportedSyntax', '${A-x}', 'darwin,linux,win32']]],
       ['node x 2>/dev/null', []],
@@ -1165,6 +1197,30 @@ describe('analyzeScript', () => {
       [String.raw`xcopy /e /i . ..\x || rsync -r ./ ../x`, []],
       ['powershell ./cert.cmd || sh ./cert.sh', []],
       [String.raw`.\prepare.bat || ./prepare`, []],
+      ['rm -rf dist || IF EXIST dist rd /s /q dist', []],
+      ['rm -rf \'a b\' || rd /s /q "a b"', []],
+      // Only commands make an alternative fail, not their arguments
+      [
+        'tsc --outDir $OUT || rd /s /q out',
+        [
+          ['unsupportedSyntax', '$OUT', 'win32'],
+          ['unsupportedCommand', 'rd', 'darwin,linux'],
+        ],
+      ],
+      // Issues of an alternative stay where it doesn't fail
+      ['rm -rf **/x || rd /s /q x', [['inconsistentBehavior', '**/x', 'darwin,linux']]],
+      // Dropped issues don't hide other ones, e.g. a later line break or a duplicate report
+      ['rm -rf \\\n  a || rd /s /q a\nnpm run build', [['unsupportedSyntax', '\n', 'win32']]],
+      [
+        String.raw`concurrently "rm -rf \"a b\" || rd /s /q \"a b\" && rm -rf \"c d\"" "x y"`,
+        [
+          [
+            'unsupportedCommand',
+            String.raw`"rm -rf \"a b\" || rd /s /q \"a b\" && rm -rf \"c d\""`,
+            'win32',
+          ],
+        ],
+      ],
       // Each command is paired once: `true` is still reported, as it runs on Windows when `rmdir`
       // fails
       ['rm -rf dist || rmdir /s /q dist || true', [['unsupportedCommand', 'true', 'win32']]],
@@ -1511,6 +1567,27 @@ describe('analyzeScript', () => {
       ['node x.js \\\n  --watch', [['unsupportedSyntax', '\n', 'win32']]],
       ['node x.js "a\nb"', [['unsupportedSyntax', '\n', 'win32']]],
       ['tsc\n', []],
+      [
+        'node server.js &\nnode client.js',
+        [
+          ['inconsistentBehavior', '&', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
+      [
+        'rd /s /q dist &\nnpm run build',
+        [
+          ['unsupportedCommand', 'rd', 'darwin,linux'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
+      [
+        'node x.js <<EOF\nhello\nEOF\necho done',
+        [
+          ['unsupportedSyntax', '<<EOF', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
       // Reported once, for the outer script
       ['concurrently "tsc\nvite"', [['unsupportedSyntax', '\n', 'win32']]],
       // A line break in a statement that's reported already doesn't count
@@ -1546,8 +1623,16 @@ describe('analyzeScript', () => {
       ['node x.js \\\n  --watch', [['unsupportedSyntax', '\n', 'darwin,linux,win32']]],
       // Only `tr` itself
       ["tr -d '\n' < a.txt", [['unsupportedCommand', 'tr', 'win32']]],
+      // Unlike `;` itself
+      ['a;\nb', [['unsupportedSyntax', '\n', 'darwin,linux,win32']]],
     ])("%j in Yarn's shell", (script, expected) => {
       expect(summarize(script, yarn)).toStrictEqual(expected);
+    });
+
+    it("reports a line break after `;` in pnpm's shell emulator", () => {
+      expect(summarize('a;\nb', {runner: 'pnpm', shellEmulator: true})).toStrictEqual([
+        ['unsupportedSyntax', '\n', 'darwin,linux,win32'],
+      ]);
     });
 
     it("doesn't report carriage returns in Yarn's shell", () => {
@@ -1559,6 +1644,19 @@ describe('analyzeScript', () => {
     it.each<[string, FixSummary[]]>([
       ['tsc &&\n  vite build', [['\n', 'Join the lines.', 'tsc && vite build']]],
       ['node x.js \\\n--watch', [['\n', 'Join the lines.', 'node x.js --watch']]],
+      // A `\` line continuation before the operator
+      ['tsc \\\n&& vite build', [['\n', 'Join the lines.', 'tsc && vite build']]],
+      ['tsc \\\n| node x.js', [['\n', 'Join the lines.', 'tsc | node x.js']]],
+      // Only the line continuation is removed, so the body of the here-document stays
+      [
+        'node a.js <<EOF \\\n| node b.js\nbody\nEOF',
+        [['\n', 'Join the lines.', 'node a.js <<EOF | node b.js\nbody\nEOF']],
+      ],
+      // `&&` would wait for the first command
+      [
+        'node server.js &\nnode client.js',
+        [['\n', 'Join the lines.', 'node server.js & node client.js']],
+      ],
     ])('fixes %j', (script, expected) => {
       expect(summarizeFixes(script)).toStrictEqual(expected);
     });
@@ -1569,6 +1667,10 @@ describe('analyzeScript', () => {
       'node x.js "a\nb"',
       // In a word, e.g. in single quotes, where POSIX shells keep the line break
       'node x.js\\\n--watch',
+      // The closing line of a here-document must stay on its own, and the body can't be removed
+      'node x.js <<EOF\nhello\nEOF\necho done',
+      'node a.js <<EOF |\nbody\nEOF\nnode b.js',
+      'node a.js <<EOF &\nbody\nEOF\nnode b.js',
     ])("doesn't fix %j", (script) => {
       expect(summarizeFixes(script)).toStrictEqual([]);
     });
@@ -1785,6 +1887,23 @@ describe('analyzeScript', () => {
         ],
         ['sed -E "s/a+/b/" f', [['unsupportedCommand', 'sed', 'win32']]],
         [String.raw`sed "s/a\/b/c/" f`, [['unsupportedCommand', 'sed', 'win32']]],
+        // `\+` is a literal `+` in extended regexes, but `-e` takes the script
+        [String.raw`sed -nE "s/a\+/b/p" f`, [['unsupportedCommand', 'sed', 'win32']]],
+        [String.raw`sed -r "s/a\+/b/" f`, [['unsupportedCommand', 'sed', 'win32']]],
+        [
+          String.raw`sed -e "s/a\+/b/" f`,
+          [
+            ['unsupportedCommand', 'sed', 'win32'],
+            ['inconsistentBehavior', String.raw`sed -e "s/a\+/b/"`, 'darwin'],
+          ],
+        ],
+        [
+          String.raw`sed -i.bak -e "s/a\?/b/" f`,
+          [
+            ['unsupportedCommand', 'sed', 'win32'],
+            ['inconsistentBehavior', String.raw`sed -i.bak -e "s/a\?/b/"`, 'darwin'],
+          ],
+        ],
         [
           'xargs -a .gitignore rm -rf',
           [
@@ -1952,6 +2071,11 @@ describe('analyzeScript', () => {
         ["svelte-kit sync || echo ''", []],
         ["echo 'Done!' && exit 0", []],
         ["echo 'a' > f", [['inconsistentBehavior', "'a'", 'win32']]],
+        ["echo 'a' 1> f", [['inconsistentBehavior', "'a'", 'win32']]],
+        ["(echo 'a') > f", [['inconsistentBehavior', "'a'", 'win32']]],
+        ["(echo 'a') | node x.js", [['inconsistentBehavior', "'a'", 'win32']]],
+        ["(echo 'a')", []],
+        ["echo 'a' >&2 && echo 'b' 1>&2 && echo 'c' 2>&1 && echo 'd' 2> err.log", []],
         [
           "echo 'a' | xargs rm",
           [
@@ -2267,6 +2391,13 @@ describe('analyzeScript', () => {
       ['# Build\ntsc', [['# Build', 'Remove the comment.', 'tsc']]],
       ['tsc\n# Done', [['# Done', 'Remove the comment.', 'tsc']]],
       [
+        'a\n# c1\n# c2\nb',
+        [
+          ['# c1', 'Remove the comment.', 'a\n# c2\nb'],
+          ['# c2', 'Remove the comment.', 'a\n# c1\nb'],
+        ],
+      ],
+      [
         'tsc\r\n# Done',
         [
           ['\r', 'Remove the carriage return.', 'tsc\n# Done'],
@@ -2353,6 +2484,9 @@ describe('analyzeScript', () => {
       'env',
       // The variables would also apply to `vite build`
       'export CI=1 && jest && vite build',
+      // The shell would expand the variables before `cross-env` sets them
+      'export PORT=3000 && next dev -p $PORT',
+      'export PORT=3000 && next dev -p "${PORT:-1}"',
       // `exit` would skip the commands that follow
       'tsc || true && vite build',
       '(tsc || true)',

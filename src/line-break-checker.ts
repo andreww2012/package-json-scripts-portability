@@ -1,16 +1,26 @@
 import type {Command} from 'unbash';
 import {type Context, type Range, rangeInScript} from './context.ts';
 import {joinLinesFix} from './fixes.ts';
-import type {Reporter, ScriptFix} from './reporter.ts';
+import type {Reporter, RunnerIssue, ScriptFix} from './reporter.ts';
 import {slidingWindow} from './utils.ts';
 
 const ONE_LINE_SUGGESTION = 'Put the command on one line instead.';
 
+interface ReportedLineBreak {
+  issue: RunnerIssue;
+  /** Range of the line break in the analyzed script */
+  range: Range;
+  /** The source that the line break is in */
+  source: string;
+}
+
 /** Checks line breaks, after which cmd.exe ignores the rest of the script */
 export class LineBreakChecker {
-  /** Ranges of reported line breaks in the analyzed script, e.g. to skip them in nested scripts */
-  readonly #lineBreaks: Range[] = [];
-  readonly #multilineSources = new Set<string>();
+  /**
+   * Reported line breaks, to report one per source and to skip them in nested scripts.
+   * Their issues may be dropped later, e.g. in a platform fallback
+   */
+  readonly #lineBreaks: ReportedLineBreak[] = [];
   readonly #reporter: Reporter;
 
   constructor(reporter: Reporter) {
@@ -86,12 +96,16 @@ export class LineBreakChecker {
   ) {
     const lineBreak = {end: position + 1, pos: position};
     const range = rangeInScript(context, lineBreak);
-    // e.g. in `concurrently "a` + line break + `b"`, which is reported for the outer script already
     const isReported = this.#lineBreaks.some(
-      (reported) => reported.pos < range.end && range.pos < reported.end,
+      (reported) =>
+        // Dropped issues are left without platforms
+        reported.issue.platforms.length > 0 &&
+        (reported.source === context.source ||
+          // e.g. in `concurrently "a` + line break + `b"`, which is reported for the outer script
+          (reported.range.pos < range.end && range.pos < reported.range.end)),
     );
 
-    if (isReported || this.#multilineSources.has(context.source)) {
+    if (isReported) {
       return;
     }
 
@@ -105,12 +119,11 @@ export class LineBreakChecker {
       fix,
     );
 
+    // The issue that was just reported
+    const issue = this.#reporter.issues.at(-1);
     // A line break in a piece that was reported already doesn't count, e.g. in an `if` statement
-    if (platforms.length === 0) {
-      return;
+    if (issue && platforms.length > 0) {
+      this.#lineBreaks.push({issue, range, source: context.source});
     }
-
-    this.#multilineSources.add(context.source);
-    this.#lineBreaks.push(range);
   }
 }
