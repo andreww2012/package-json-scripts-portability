@@ -275,7 +275,10 @@ export const semicolonFix = (
   next: Statement | undefined,
 ): ScriptFix | undefined => {
   if (!next) {
-    return {description: 'Remove the `;`.', edits: [{...range, text: ''}]};
+    // Without a space, a `#` right after the `;` would join the word before it instead of
+    // starting a comment
+    const text = gap[gap.indexOf(';') + 1] === '#' ? ' ' : '';
+    return {description: 'Remove the `;`.', edits: [{...range, text}]};
   }
 
   return gap.trim() === ';' && canChain(next)

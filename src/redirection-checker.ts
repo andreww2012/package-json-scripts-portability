@@ -29,7 +29,7 @@ const OUTPUT_OPERATORS: ReadonlySet<RedirectOperator> = new Set([
 
 /**
  * Checks whether a redirection writes the standard output to a file, e.g. `> out.log`, but not
- * `>&2` or `2> err.log`.
+ * `>&2`, `2> err.log` or `> /dev/null`.
  * @param redirection The redirection
  * @returns Whether it does
  */
@@ -43,7 +43,10 @@ export const doesRedirectOutput = (redirection: Redirection) => {
   return (
     (descriptor == null || (descriptor.type === 'FileDescriptor' && descriptor.value === 1)) &&
     // e.g. `>&2`, which duplicates a file descriptor instead
-    !(operator === '>&' && value != null && DESCRIPTOR.test(value))
+    !(operator === '>&' && value != null && DESCRIPTOR.test(value)) &&
+    // Devices don't keep the output, e.g. `/dev/null`
+    !POSIX_PATH.test(value || '') &&
+    !setHas(WINDOWS_DEVICES, value?.toLowerCase())
   );
 };
 
@@ -59,23 +62,20 @@ export class RedirectionChecker {
     this.#words = words;
   }
 
-  checkEchoToFile(node: Command, context: Context) {
-    const doesWriteFile = node.redirects.some(
-      (redirect) =>
-        redirect.type === 'Redirect' &&
-        (redirect.operator === '>' || redirect.operator === '>>') &&
-        redirect.descriptor == null &&
-        !POSIX_PATH.test(redirect.target?.value || '') &&
-        !setHas(WINDOWS_DEVICES, redirect.target?.value.toLowerCase()),
-    );
+  /**
+   * Reports a double-quoted string that `echo` writes to a file or a pipe.
+   * @param node The `echo` command, whose output doesn't go to the terminal
+   * @param context Where the command is
+   */
+  checkQuotedEcho(node: Command, context: Context) {
     const quoted = node.args.find(
       (argument) =>
         argument.type === 'Word' && argument.parts?.some((part) => part.type === 'DoubleQuoted'),
     );
 
-    if (doesWriteFile && quoted) {
+    if (quoted) {
       this.#reporter.reportSyntax(context, quoted, 'posix', true, 'inconsistentBehavior', {
-        reason: "cmd.exe's `echo` writes the quotes into the file",
+        reason: "cmd.exe's `echo` writes the quotes too",
         suggestion: NODE_SCRIPT_SUGGESTION,
         syntax: 'Writing a double-quoted string with `echo`',
       });

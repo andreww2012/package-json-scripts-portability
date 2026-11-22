@@ -7,6 +7,8 @@ import {
   EXEC_VALUE_OPTIONS,
   PACKAGE_MANAGER_VALUE_OPTIONS,
   PORTABLE_SHELL_BUILTINS,
+  SHELL_STATE_COMMANDS,
+  TIMEOUT_VALUE_OPTIONS,
   WRAPPER_VALUE_OPTIONS,
 } from './commands.ts';
 import {type Context, type Shell, withCovered} from './context.ts';
@@ -30,7 +32,11 @@ import {
 } from './words.ts';
 
 interface InvocationResult {
-  crossEnv: boolean;
+  /**
+   * Where the arguments of `cross-env` start, if it runs the command, also behind another command,
+   * e.g. in `npx cross-env A=1 jest`
+   */
+  crossEnvStart: number | undefined;
   name: string | undefined;
   /** The innermost command that receives the arguments, e.g. `rm` in `cross-env A=1 rm -rf dist` */
   target: string | undefined;
@@ -68,6 +74,35 @@ const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
 
 /** A word of letters, digits and underscores, e.g. a variable name */
 const IDENTIFIER = /\w+/g;
+
+const SHELL_OPTION = /^[+-]./;
+/** A shell option that takes a value, also at the end of a cluster, e.g. `-o` in `-euo pipefail` */
+const SHELL_VALUE_OPTION = /^(?:[+-][a-z]*o|--init-file|--rcfile)$/i;
+
+/**
+ * Finds the script of a shell's `-c` option, e.g. in `sh -c "..."`.
+ * The shell's options end at the script file, whose arguments are its own, e.g. `-c` in
+ * `sh build.sh -c x`.
+ * @param values The static values of the shell's arguments
+ * @returns Index of the script, or -1 if there is none
+ */
+const findCommandString = (values: readonly (string | undefined)[]) => {
+  let index = 0;
+
+  while (index < values.length) {
+    const value = values[index];
+    if (value == null || !SHELL_OPTION.test(value)) {
+      break;
+    }
+
+    index += SHELL_VALUE_OPTION.test(value) ? 2 : 1;
+    if (isShortOptionCluster(value, 'c')) {
+      return index;
+    }
+  }
+
+  return -1;
+};
 
 /**
  * Checks whether a piece of a script mentions a variable that assignments set, e.g. `$PORT` for
@@ -206,6 +241,8 @@ export class CommandChecker {
       exporting.suffix.every(isPlainAssignment) &&
       command?.type === 'Command' &&
       command.name &&
+      // `cross-env` can't run shell builtins, e.g. `cd` in `export A=1 && cd x`
+      !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '') &&
       // The shell expands the command's variables before `cross-env` sets them, e.g. in
       // `next dev -p $PORT`
       !doesMentionVariables(source.slice(command.pos, command.end), exporting.suffix)
@@ -300,7 +337,7 @@ export class CommandChecker {
   ) {
     const name = staticValue(nameWord);
     const result: InvocationResult = {
-      crossEnv: name === 'cross-env' || name === 'cross-env-shell',
+      crossEnvStart: name === 'cross-env' || name === 'cross-env-shell' ? nameWord.end : undefined,
       name,
       target: name,
     };
@@ -310,12 +347,15 @@ export class CommandChecker {
     }
 
     const values = argumentWords.map(staticValue);
+    const follow = (wrapped: InvocationResult | undefined) => {
+      // Not `||`: the target of a command named `""` is empty
+      result.target = wrapped?.target ?? name;
+      result.crossEnvStart ||= wrapped?.crossEnvStart;
+    };
 
     // An ignored command isn't reported, but the commands it runs are
     if (this.#options.ignoredCommands.has(name)) {
-      result.target =
-        // Not `||`: the target of a command named `""` is empty
-        this.#checkWrapped(name, argumentWords, values, context, depth)?.target ?? name;
+      follow(this.#checkWrapped(name, argumentWords, values, context, depth));
       return result;
     }
 
@@ -379,11 +419,7 @@ export class CommandChecker {
     this.#reporter.markFailures(firstIssue);
 
     // The commands that it runs aren't reported on the platforms where it's reported already
-    // Not `||`: the target of a command named `""` is empty
-    result.target =
-      this.#checkWrapped(name, argumentWords, values, withCovered(context, covered), depth)
-        ?.target ?? name;
-
+    follow(this.#checkWrapped(name, argumentWords, values, withCovered(context, covered), depth));
     return result;
   }
 
@@ -478,11 +514,6 @@ export class CommandChecker {
       }
     };
 
-    // The script of a shell's `-c` option, e.g. in `sh -c "..."`
-    const commandStringIndex = () => {
-      const index = values.findIndex((value) => isShortOptionCluster(value, 'c'));
-      return index === -1 ? -1 : index + 1;
-    };
     // `-c`/`--call` of `npx` and `npm exec` (a shell string), which is only their option before the
     // command they run
     const callIndex = (start: number, valueOptions: readonly string[]) => {
@@ -510,7 +541,7 @@ export class CommandChecker {
       case 'bash':
       case 'ksh':
       case 'zsh': {
-        nestedShellString(commandStringIndex(), {
+        nestedShellString(findCommandString(values), {
           // e.g. `bash -O globstar -c "..."`
           bashOptions: new Set(
             slidingWindow(values, 2).flatMap(([option, value]) =>
@@ -551,8 +582,16 @@ export class CommandChecker {
 
       case 'dash':
       case 'sh': {
-        nestedShellString(commandStringIndex(), {shell: 'sh'});
+        nestedShellString(findCommandString(values), {shell: 'sh'});
         return undefined;
+      }
+
+      case 'timeout': {
+        // GNU's `timeout [options] duration command`, unlike cmd.exe's `timeout /t 10`
+        const duration = findCommandIndex(values, 0, TIMEOUT_VALUE_OPTIONS);
+        return duration === -1 || values[duration]?.startsWith('/')
+          ? undefined
+          : invoke(duration + 1);
       }
 
       case 'aube':

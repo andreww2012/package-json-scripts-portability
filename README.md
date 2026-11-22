@@ -219,6 +219,8 @@ The types `AnalyzeScriptOptions`, `Platform`, `Runner`, `ScriptEdit`, `ScriptFix
 - The scripts of shells (`sh -c`), `cross-env`, `concurrently`, `npx`, `npm exec`, `pnpm dlx` and the like, and of commands like `env` and `xargs` are checked.
   Other tools that run commands, like `nodemon --exec`, are not, since each of them takes different options.
 - Unquoted globs are only reported if they contain `**/`: many tools expand simpler globs themselves when the shell doesn't.
+- A tool's own `%NAME%` placeholder, like in `--bundle-structure "%LANG_ISO%.json"`, looks the same as a cmd.exe variable, so it's reported as one.
+  In single quotes it isn't, but then the quotes are reported, since cmd.exe passes them on.
 - A script that isn't valid shell syntax is only checked for cmd.exe syntax like `if exist`.
 - `node --run` and upm don't run `pre` and `post` scripts, which isn't checked.
 - Whether the package is private isn't known, so its install scripts are runner-agnostic, unless you tell otherwise.

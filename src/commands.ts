@@ -476,6 +476,9 @@ export const PACKAGE_MANAGER_VALUE_OPTIONS: readonly string[] = [
 /** Options of package managers' exec subcommands that take a value */
 export const EXEC_VALUE_OPTIONS: readonly string[] = ['--package', '-p'];
 
+/** Options of GNU `timeout` that take a value */
+export const TIMEOUT_VALUE_OPTIONS: readonly string[] = ['--kill-after', '--signal', '-k', '-s'];
+
 /** Commands whose arguments are often patterns rather than paths */
 export const PATTERN_COMMANDS: ReadonlySet<string> = new Set([
   'awk',
@@ -505,26 +508,39 @@ export const WRAPPER_VALUE_OPTIONS: ReadonlyMap<string, readonly string[]> = new
 ]);
 
 /**
- * Builtins that change the shell's state.
- * In a subshell, the change doesn't reach the commands that follow
+ * Builtins that change or use the state of the shell that runs them.
+ * They don't work the same in a subshell, or when another command runs them, e.g. `cross-env`
  */
 export const SHELL_STATE_COMMANDS: ReadonlySet<string> = new Set([
   '.',
   'alias',
+  'builtin',
   'cd',
+  'command',
+  'declare',
+  'eval',
+  'exec',
   'exit',
   'export',
+  'getopts',
+  'let',
+  'local',
+  'mapfile',
   'popd',
   'pushd',
   'read',
+  'readarray',
   'readonly',
   'return',
   'set',
   'shift',
+  'shopt',
   'source',
   'trap',
+  'typeset',
   'ulimit',
   'umask',
   'unalias',
   'unset',
+  'wait',
 ]);

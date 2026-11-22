@@ -70,10 +70,13 @@ const GNU_FIND_PRIMARIES: ReadonlySet<string> = new Set([
 /** BSD `find` options, which come before the starting paths */
 const BSD_FIND_OPTIONS = /^-[EHLPXdsx]+$/; // cspell:disable-line
 
-/** GNU regex escapes that BSD `sed` doesn't support, e.g. `\s` */
-const GNU_SED_ESCAPE = /\\[<>bsw]/i;
+/**
+ * GNU regex escapes that BSD `sed` doesn't support, e.g. `\s`, but not after an escaped backslash,
+ * e.g. in `\\s`
+ */
+const GNU_SED_ESCAPE = /(?<!\\)(?:\\\\)*(\\[<>bsw])/i;
 /** The same, in basic regexes only */
-const GNU_SED_BASIC_ESCAPE = /\\[+?]/;
+const GNU_SED_BASIC_ESCAPE = /(?<!\\)(?:\\\\)*(\\[+?])/;
 
 /** GNU `xargs` options that BSD `xargs` doesn't support, e.g. `-d` */
 // cspell:disable-next-line
@@ -435,7 +438,7 @@ export const checkCommandUsage = (
           ? undefined
           : (
               GNU_SED_ESCAPE.exec(value) || (isExtended ? null : GNU_SED_BASIC_ESCAPE.exec(value))
-            )?.[0];
+            )?.[1];
       const escapeIndex = values.findIndex((value) => findEscape(value) != null);
       if (escapeIndex !== -1) {
         report(escapeIndex, MACOS_PLATFORMS, {

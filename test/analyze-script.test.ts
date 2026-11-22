@@ -531,6 +531,8 @@ describe('analyzeScript', () => {
       [String.raw`grep "a\.b" file`, [['unsupportedCommand', 'grep', 'win32']]],
       [String.raw`echo "done\n"`, []],
       ['node x.js %PORT%', [['unsupportedSyntax', '%PORT%', 'darwin,linux']]],
+      // One-letter names are mostly parts of format strings
+      ['git log --pretty=%s%n', []],
       ['date +%Y%m%d', [['unsupportedCommand', 'date', 'win32']]],
       ['node x 2>nul', [['inconsistentBehavior', 'nul', 'darwin,linux']]],
       ['if exist dist rd /s /q dist', [['unsupportedSyntax', 'if exist', 'darwin,linux']]],
@@ -1174,6 +1176,7 @@ describe('analyzeScript', () => {
       ['coproc { a; }', [['unsupportedSyntax', 'coproc', 'darwin,linux,win32']]],
       ['# Only a comment', []],
       ['# Only a comment \n\n', []],
+      ['# Only\n\n  # comments\n', []],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -2143,6 +2146,11 @@ describe('analyzeScript', () => {
           "lokalise2 file download --bundle-structure '%LANG_ISO%.json'",
           [['inconsistentBehavior', "'%LANG_ISO%.json'", 'win32']],
         ],
+        // A known limit: without single quotes, they can't be told from Windows variables
+        [
+          'lokalise2 file download --bundle-structure "%LANG_ISO%.json"',
+          [['unsupportedSyntax', '"%LANG_ISO%.json"', 'darwin,linux']],
+        ],
         ['setlocal && node x', [['unsupportedCommand', 'setlocal', 'darwin,linux']]],
       ])('%j', (script, expected) => {
         expect(summarize(script)).toStrictEqual(expected);
@@ -2240,6 +2248,49 @@ describe('analyzeScript', () => {
       ['wget https://example.com', [['unsupportedCommand', 'wget', 'darwin,win32']]],
       // Node.js resolves `/tmp` on Windows too
       ['node x /tmp/out', []],
+      // `cross-env` behind another command still replaces variables and removes single quotes
+      ['npx cross-env NODE_ENV=production webpack --env mode=$NODE_ENV', []],
+      ["pnpm exec cross-env A=1 node x 'ab'", []],
+      // But only in the words after it
+      ['npx -p $PKG cross-env A=1 node x $A', [['unsupportedSyntax', '$PKG', 'win32']]],
+      // cmd.exe runs the operators in single-quoted strings that `echo` prints
+      ["echo 'Done & dusted'", [['inconsistentBehavior', "'Done & dusted'", 'win32']]],
+      ["echo '==> Building'", [['inconsistentBehavior', "'==> Building'", 'win32']]],
+      // cmd.exe's `echo` writes quotes into pipes and through groups too
+      ['echo "y" | some-cli', [['inconsistentBehavior', '"y"', 'win32']]],
+      ['(echo "a") > f', [['inconsistentBehavior', '"a"', 'win32']]],
+      ['echo "a" 1> f', [['inconsistentBehavior', '"a"', 'win32']]],
+      // Devices don't keep the output
+      ['echo "x" > /dev/null', [['unsupportedSyntax', '/dev/null', 'win32']]],
+      ["echo 'x' > /dev/null", [['unsupportedSyntax', '/dev/null', 'win32']]],
+      // A `-c` after a script file is the script's own argument
+      ['bash ./deploy.sh -c "find -name x"', [['unsupportedCommand', 'bash', 'win32']]],
+      ['sh ./run.sh -c "source x"', [['unsupportedCommand', 'sh', 'win32']]],
+      // An option with a value doesn't end the shell's options
+      [
+        'bash -euo pipefail -c "find -name x"',
+        [
+          ['unsupportedCommand', 'bash', 'win32'],
+          ['unsupportedUsage', 'find -name', 'darwin'],
+        ],
+      ],
+      // GNU `timeout` runs a command, unlike cmd.exe's
+      [
+        'timeout -k 5 10 open x',
+        [
+          ['unsupportedCommand', 'timeout', 'darwin,win32'],
+          ['unsupportedCommand', 'open', 'linux'],
+        ],
+      ],
+      ['timeout /t 10', [['unsupportedUsage', 'timeout /t', 'darwin,linux']]],
+      // `\b` after an escaped backslash is a plain letter
+      [
+        String.raw`sed 's/a\\b/x/' f`,
+        [
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['inconsistentBehavior', String.raw`'s/a\\b/x/'`, 'win32'],
+        ],
+      ],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -2415,6 +2466,14 @@ describe('analyzeScript', () => {
         ],
       ],
       ['tsc;', [[';', 'Remove the `;`.', 'tsc']]],
+      // A space keeps the comment apart from the word before it
+      [
+        'node x;# note',
+        [
+          [';', 'Remove the `;`.', 'node x # note'],
+          ['# note', 'Remove the comment.', 'node x;'],
+        ],
+      ],
       [
         '{ tsc; vite build; } > log',
         [['{', 'Replace `{ ... }` with `( ... )`.', '( tsc; vite build; ) > log']],
@@ -2550,6 +2609,16 @@ describe('analyzeScript', () => {
       // A subshell keeps `exit` and variables from affecting the commands that follow
       'test -f x || { echo missing; exit 1; }',
       '{ A=1; } && echo $A',
+      // In a subshell, `exec` doesn't replace the shell that runs the commands that follow
+      '{ exec node x; } && tsc',
+      // `cross-env` can't run shell builtins
+      'A=1 cd x',
+      'A=1 exec node x',
+      'export A=1 && cd x',
+      // In double quotes, the placeholder would be reported as a Windows variable
+      "lokalise2 file download --bundle-structure '%LANG_ISO%.json'",
+      // A `-c` after a script file is the script's own argument
+      'bash ./deploy.sh -c "find -name x"',
       'mkdir -p dist/{a,$B}',
       'grep -v ^$ log',
       // Positions in escaped nested scripts can't be mapped

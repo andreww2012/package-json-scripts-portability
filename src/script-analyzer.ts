@@ -749,38 +749,40 @@ class ScriptAnalyzer {
         context,
         0,
       );
-    let argumentContext = invocation?.crossEnv ? {...context, crossEnv: true} : context;
     // Shells and `find` have to be replaced on Windows anyway (e.g. with a Node.js script), so how
     // their arguments are quoted doesn't matter there
-    if (
-      invocation?.name != null &&
-      (SHELLS.includes(invocation.name) || invocation.name === 'find')
-    ) {
-      argumentContext = withCovered(argumentContext, WINDOWS_PLATFORMS);
-    }
+    const argumentContext =
+      invocation?.name != null && (SHELLS.includes(invocation.name) || invocation.name === 'find')
+        ? withCovered(context, WINDOWS_PLATFORMS)
+        : context;
+    const crossEnv = invocation?.crossEnvStart != null && {
+      context: {...argumentContext, crossEnv: true},
+      start: invocation.crossEnvStart,
+    };
+    // `cross-env` only gets the words after it, e.g. not `$A` in `npx -p $A cross-env B=1 jest`
+    const contextOf = (item: Range) =>
+      crossEnv && item.pos >= crossEnv.start ? crossEnv.context : argumentContext;
+    const isOutputUsed = context.outputRedirected || node.redirects.some(doesRedirectOutput);
 
     if (node.name) {
       this.#words.checkWord(node.name, context, {commandName: true});
 
-      if (invocation?.name === 'echo' && !context.portable) {
-        this.#redirections.checkEchoToFile(node, context);
+      if (isOutputUsed && !context.portable && invocation?.name === 'echo') {
+        this.#redirections.checkQuotedEcho(node, context);
       }
     }
 
     this.#lineBreaks.checkCommandLineBreak(node, argumentContext);
 
-    const isPrintedToTerminal =
-      invocation?.target === 'echo' &&
-      !context.outputRedirected &&
-      !node.redirects.some(doesRedirectOutput);
+    const isPrintedToTerminal = invocation?.target === 'echo' && !isOutputUsed;
 
     node.suffix.forEach((item) => {
       if (item.type === 'Assignment') {
         (item.value.type === 'Word' ? [item.value] : item.value.elements).forEach((word) => {
-          this.#words.checkWord(word, argumentContext);
+          this.#words.checkWord(word, contextOf(word));
         });
       } else if (item.type === 'Word') {
-        this.#words.checkWord(item, argumentContext, {
+        this.#words.checkWord(item, contextOf(item), {
           command: invocation?.target,
           printedToTerminal: isPrintedToTerminal,
         });

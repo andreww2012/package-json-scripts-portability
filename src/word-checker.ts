@@ -11,7 +11,7 @@ import type {
   Word,
   WordPart,
 } from 'unbash';
-import {OS_COMMANDS, PATTERN_COMMANDS} from './commands.ts';
+import {OS_COMMANDS, PATTERN_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
 import {type Context, type Range, type SyntaxKind, bashLabel, withCovered} from './context.ts';
 import {braceExpansionFix, quoting, replacement} from './fixes.ts';
 import {
@@ -99,6 +99,8 @@ export const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
 
 /** Characters that cmd.exe splits words at or interprets */
 const CMD_SPECIAL_CHARACTERS = /[\s"%&<>^|]/;
+/** Operators that cmd.exe runs even in a string that `echo` prints, e.g. `>` in `echo '-> done'` */
+const CMD_OPERATORS = /[&<>|]/;
 /** Backslash escapes that POSIX shells remove, but cmd.exe passes on, e.g. `\$` or `\ ` */
 const UNQUOTED_ESCAPE = /\\[\t !#$&'()*;<>?[\]`{|}~]/g;
 /** The same, in double quotes */
@@ -109,6 +111,11 @@ const CROSS_ENV_ESCAPE = /^\\[$']$/;
 const NAMED_VARIABLE = /^\$\w+$/;
 /** A `**` path segment, which `sh` doesn't expand recursively */
 const RECURSIVE_GLOB = /(?:^|[/=])\*\*\//;
+
+/**
+ * A cmd.exe variable, e.g. `%PORT%`. One-letter names are left out: they're mostly parts of
+ * format strings, e.g. `%s%` in `--pretty=%s%n`
+ */
 const WINDOWS_VARIABLE = /%[a-z_]\w+%/i;
 const WINDOWS_VARIABLES = new RegExp(WINDOWS_VARIABLE, 'gi');
 
@@ -233,7 +240,10 @@ export class WordChecker {
             ? `The inline environment variable assignment \`${truncate(assignment.text)}\``
             : `The shell variable assignment \`${truncate(assignment.text)}\``,
         },
-        command?.prefix.every(isPlainAssignment)
+        // `cross-env` can't run shell builtins, e.g. `cd` in `A=1 cd x`
+        command?.name &&
+          command.prefix.every(isPlainAssignment) &&
+          !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '')
           ? {
               description: 'Prefix the command with `cross-env`.',
               edits: [{end: command.pos, pos: command.pos, text: 'cross-env '}],
@@ -615,7 +625,7 @@ export class WordChecker {
         state.hasSingleQuotes = true;
         // cmd.exe still splits the string at whitespace and interprets its special characters
         if (
-          state.printedToTerminal ||
+          (state.printedToTerminal && !CMD_OPERATORS.test(part.value)) ||
           (context.crossEnv && !CMD_SPECIAL_CHARACTERS.test(part.value))
         ) {
           break;
@@ -627,14 +637,19 @@ export class WordChecker {
           true,
           'inconsistentBehavior',
           {
-            reason: context.crossEnv
-              ? "cmd.exe doesn't treat single quotes as quotes, so it splits the string before `cross-env` removes them"
-              : "cmd.exe doesn't treat single quotes as quotes, so they're passed on literally",
+            reason: state.printedToTerminal
+              ? "cmd.exe doesn't treat single quotes as quotes, so it runs the operators in the string"
+              : context.crossEnv
+                ? "cmd.exe doesn't treat single quotes as quotes, so it splits the string before `cross-env` removes them"
+                : "cmd.exe doesn't treat single quotes as quotes, so they're passed on literally",
             suggestion: 'Use escaped double quotes (`\\"`) instead.',
             syntax: `The single-quoted string \`${truncate(part.text)}\``,
           },
-          // cmd.exe's `echo` prints double quotes too
-          state.command === 'echo' || DOUBLE_QUOTED_SPECIAL_CHARACTERS.test(part.value)
+          // cmd.exe's `echo` prints double quotes too, and in double quotes a placeholder like
+          // `%LANG%` is reported as a Windows variable
+          state.command === 'echo' ||
+            DOUBLE_QUOTED_SPECIAL_CHARACTERS.test(part.value) ||
+            WINDOWS_VARIABLE.test(part.value)
             ? undefined
             : {
                 description: 'Use escaped double quotes instead.',
@@ -801,7 +816,8 @@ export class WordChecker {
     }
 
     // In single quotes, it's likely the tool's own placeholder, e.g. in
-    // `--bundle-structure '%LANG_ISO%.json'`
+    // `--bundle-structure '%LANG_ISO%.json'`. Anywhere else, such a placeholder can't be told from
+    // a variable, so it's reported too: a known limit
     if (!state.hasSingleQuotes && options.command !== 'date' && options.command !== 'printf') {
       const match = WINDOWS_VARIABLE.exec(text);
       // Other `%` signs indicate a format string, e.g. `--pretty=format:%C(bold)%ad%C(reset)`

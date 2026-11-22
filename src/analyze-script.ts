@@ -36,8 +36,8 @@ export interface AnalyzeScriptOptions {
 
 const DEFAULT_RUNNERS: readonly Runner[] = ['npm'];
 
-/** A script that only consists of a comment line, i.e. documentation rather than a script */
-const COMMENT_LINE = /^\s*#[^\n]*$/;
+/** A script that only consists of comment lines, i.e. documentation rather than a script */
+const COMMENT_LINES = /^\s*#[^\n]*(?:\n\s*#[^\n]*)*$/;
 
 /**
  * Merges the issues found with each runner, e.g. `rm` with both npm and pnpm.
@@ -85,7 +85,7 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, Run
  * @returns The issues found, with offsets relative to the script
  */
 export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}) => {
-  if (COMMENT_LINE.test(script.trimEnd())) {
+  if (COMMENT_LINES.test(script.trimEnd())) {
     return [];
   }
 
