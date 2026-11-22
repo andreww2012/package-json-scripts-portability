@@ -406,8 +406,10 @@ export class CommandChecker {
 
     const nestedShellString = (
       index: number,
-      shell: Shell = 'native',
-      bashOptions?: ReadonlySet<string>,
+      {
+        bashOptions,
+        shell = 'native',
+      }: Partial<Pick<NestedWordsOptions, 'bashOptions' | 'shell'>> = {},
     ) => {
       const word = argumentWords[index];
       if (word && depth < MAX_DEPTH) {
@@ -462,16 +464,15 @@ export class CommandChecker {
       case 'bash':
       case 'ksh':
       case 'zsh': {
-        nestedShellString(
-          commandStringIndex(),
-          'bash',
+        nestedShellString(commandStringIndex(), {
           // e.g. `bash -O globstar -c "..."`
-          new Set(
+          bashOptions: new Set(
             slidingWindow(values, 2).flatMap(([option, value]) =>
               option === '-O' && value ? [value] : [],
             ),
           ),
-        );
+          shell: 'bash',
+        });
         return undefined;
       }
 
@@ -504,7 +505,7 @@ export class CommandChecker {
 
       case 'dash':
       case 'sh': {
-        nestedShellString(commandStringIndex(), 'sh');
+        nestedShellString(commandStringIndex(), {shell: 'sh'});
         return undefined;
       }
 

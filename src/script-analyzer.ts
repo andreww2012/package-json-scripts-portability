@@ -373,7 +373,8 @@ class ScriptAnalyzer {
       }
     }
 
-    dropped.toReversed().forEach(([runStart, runEnd]) => {
+    // eslint-disable-next-line sonar/no-misleading-array-reverse -- False positive
+    dropped.reverse().forEach(([runStart, runEnd]) => {
       const start = starts[runStart];
       const end = starts[runEnd + 1];
       if (start != null && end != null) {

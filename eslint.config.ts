@@ -64,7 +64,6 @@ export default eslintConfig({
       overrides: {
         'un/no-type-assertion': 2,
         'un/prefer-array-for-each': 2,
-        'un/prefer-logical-or': 2,
       },
     },
     unicorn: {
