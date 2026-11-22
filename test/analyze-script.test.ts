@@ -11,7 +11,8 @@ type FixSummary = [text: string, description: string, fixed: string];
  */
 const summarize = (script: string, options?: AnalyzeScriptOptions): Summary[] =>
   analyzeScript(script, options)
-    .toSorted((left, right) => left.pos - right.pos)
+    // eslint-disable-next-line unicorn/no-array-sort -- Sorts a new array
+    .sort((left, right) => left.pos - right.pos)
     .map(({end, messageId, platforms, pos}) => [
       messageId,
       script.slice(pos, end),
@@ -27,7 +28,8 @@ const summarize = (script: string, options?: AnalyzeScriptOptions): Summary[] =>
  */
 const summarizeFixes = (script: string, options?: AnalyzeScriptOptions) =>
   analyzeScript(script, options)
-    .toSorted((left, right) => left.pos - right.pos)
+    // eslint-disable-next-line unicorn/no-array-sort -- Sorts a new array
+    .sort((left, right) => left.pos - right.pos)
     .flatMap(({end, fix, pos}): FixSummary[] =>
       fix ? [[script.slice(pos, end), fix.description, applyFix(script, fix)]] : [],
     );
@@ -736,7 +738,7 @@ describe('analyzeScript', () => {
         String.raw`node scripts\build.js`,
         [['inconsistentBehavior', String.raw`scripts\build.js`, 'darwin,linux,win32']],
       ],
-      // Commands like concurrently run their arguments with the system shell
+      // Commands like `concurrently` run their arguments with the system shell
       ['concurrently "NODE_ENV=dev vite"', [['unsupportedSyntax', 'NODE_ENV=dev', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script, yarn)).toStrictEqual(expected);
@@ -1000,7 +1002,7 @@ describe('analyzeScript', () => {
 
   describe('regressions from real-world scripts', () => {
     it.each<[string, Summary[]]>([
-      // `-c` belongs to concurrently (colors), not npx
+      // `-c` belongs to `concurrently` (colors), not `npx`
       ['pnpx concurrently -c "#ffcf00,#3178c6" "pnpm dev:build"', []],
       [
         'npx --yes concurrently -c red,blue "tsc -w" "rm -rf x"',
@@ -1008,7 +1010,7 @@ describe('analyzeScript', () => {
       ],
       ['npm exec --package=foo -c "rm y"', [['unsupportedCommand', 'rm', 'win32']]],
       ['npm exec -- concurrently -c "#fff" "vite"', []],
-      // concurrently's script shortcuts aren't shell scripts
+      // `concurrently`'s script shortcuts aren't shell scripts
       ['concurrently "npm:lint:*(!fix)" "pnpm:dev:*"', []],
       ["concurrently 'npm:watch-*'", [['inconsistentBehavior', "'npm:watch-*'", 'win32']]],
       // Many tools expand braces themselves, when the shell doesn't
@@ -1575,7 +1577,7 @@ describe('analyzeScript', () => {
   // Checked on GitHub's Windows runners with npm, pnpm v10 and Yarn v1
   describe('command paths', () => {
     it.each<[string, Summary[]]>([
-      // cross-env's cross-spawn normalizes the path and reads the file's shebang
+      // `cross-env`'s `cross-spawn` normalizes the path and reads the file's shebang
       ['cross-env A=1 ./node_modules/.bin/eslint .', []],
       ['cross-env A=1 ./scripts/build.js', []],
       // A shell runs it there

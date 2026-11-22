@@ -1,15 +1,15 @@
 # package-json-scripts-portability [![npm](https://img.shields.io/npm/v/package-json-scripts-portability)](https://npmx.dev/package-json-scripts-portability)
 
-Finds package.json scripts that don't work the same on Windows, macOS and Linux, and suggests fixes.
+Finds `package.json` scripts that don't work the same on Windows, macOS and Linux, and suggests fixes.
 Package managers run scripts with cmd.exe on Windows and with `sh` elsewhere, and `sh` differs too: it's dash on Debian/Ubuntu and Bash 3.2 on macOS.
 
 - 🖥️ **Every platform**: cmd.exe on Windows, Bash 3.2 and BSD tools on macOS, dash and GNU tools on Linux.
 - 🔍 **Commands, syntax and options**: `rm`, `open`, `FOO=1 cmd`, `$VAR`, single quotes, `;`, `&`, `[[ ... ]]`, `sed -i`, `mkdir -p`, `%VAR%`, backslash paths and many more.
-- 🪆 **Nested scripts**: also checks what `sh -c`, [cross-env], [concurrently], `npx` and the like run.
+- 🪆 **Nested scripts**: also checks what `sh -c`, [`cross-env`][cross-env], [`concurrently`][concurrently], `npx` and the like run.
 - 🔀 **Fallbacks**: `rm -rf dist || rmdir /s /q dist` works everywhere, so it's not reported.
 - 🔧 **Safe fixes**: only when the script keeps working the same way, e.g. `rimraf dist` for `rm -rf dist`.
 - 📦 **Package managers**: npm, pnpm, Yarn, aube, upm and `node --run`, including the quirks of Yarn v1 and the portable shell of Yarn v2+.
-- 🔒 **Static**: parses the scripts with [unbash] and never runs them.
+- 🔒 **Static**: parses the scripts with [`unbash`][unbash] and never runs them.
 
 ## Examples
 
@@ -28,7 +28,7 @@ Package managers run scripts with cmd.exe on Windows and with `sh` elsewhere, an
 | `node scripts\build.js`        | macOS, Linux   | POSIX shells treat backslashes as escape characters         | `node scripts/build.js`                 |
 | `if exist dist rd /s /q dist`  | macOS, Linux   | It's cmd.exe syntax                                         |                                         |
 
-The scripts are shown as they are after JSON decoding: in package.json, `node scripts\build.js` is written as `"node scripts\\build.js"`.
+The scripts are shown as they are after JSON decoding: in `package.json`, `node scripts\build.js` is written as `"node scripts\\build.js"`.
 
 ## Usage
 
@@ -65,7 +65,7 @@ analyzeScript(script).forEach((issue) => {
 });
 ```
 
-### Checking a package.json
+### Checking a `package.json`
 
 Pass the dependencies and tell what runs the scripts:
 
@@ -182,14 +182,14 @@ Runner-agnostic scripts aren't checked with `node --run`, since it doesn't insta
 
 ## Options
 
-| Option                  | Default                       | Description                                                                                                                     |
-| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `dependencies`          | `[]`                          | Names of the package's dependencies. With [del-cli], `del` is reported as cmd.exe's builtin, which takes precedence on Windows. |
-| `ignoreCommands`        | `[]`                          | Commands not to report, e.g. ones that you install on every platform. The commands that they run are still checked.             |
-| `runner`                | `'npm'`                       | What runs the scripts, or a list of runners, see [Package managers](#package-managers).                                         |
-| `runnerAgnosticScripts` | Install scripts and `prepare` | Scripts that are checked with all package managers, see [Runner-agnostic scripts](#runner-agnostic-scripts).                    |
-| `scriptName`            | None                          | The script's name in package.json, e.g. `postinstall`, to tell whether it's runner-agnostic.                                    |
-| `shellEmulator`         | `false`                       | Whether pnpm's `shell-emulator` setting is on, so that it runs the scripts with Yarn's shell.                                   |
+| Option                  | Default                       | Description                                                                                                                                |
+| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dependencies`          | `[]`                          | Names of the package's dependencies. With [`del-cli`][del-cli], `del` is reported as cmd.exe's builtin, which takes precedence on Windows. |
+| `ignoreCommands`        | `[]`                          | Commands not to report, e.g. ones that you install on every platform. The commands that they run are still checked.                        |
+| `runner`                | `'npm'`                       | What runs the scripts, or a list of runners, see [Package managers](#package-managers).                                                    |
+| `runnerAgnosticScripts` | Install scripts and `prepare` | Scripts that are checked with all package managers, see [Runner-agnostic scripts](#runner-agnostic-scripts).                               |
+| `scriptName`            | None                          | The script's name in `package.json`, e.g. `postinstall`, to tell whether it's runner-agnostic.                                             |
+| `shellEmulator`         | `false`                       | Whether pnpm's `shell-emulator` setting is on, so that it runs the scripts with Yarn's shell.                                              |
 
 ## API
 
@@ -216,7 +216,7 @@ The types `AnalyzeScriptOptions`, `Platform`, `Runner`, `ScriptEdit`, `ScriptFix
 
 - Scripts are only parsed, so it doesn't know which commands are installed or which files exist.
   Commands from npm packages, like `rimraf`, are assumed to work everywhere.
-- The scripts of shells (`sh -c`), cross-env, concurrently, `npx`, `npm exec`, `pnpm dlx` and the like, and of commands like `env` and `xargs` are checked.
+- The scripts of shells (`sh -c`), `cross-env`, `concurrently`, `npx`, `npm exec`, `pnpm dlx` and the like, and of commands like `env` and `xargs` are checked.
   Other tools that run commands, like `nodemon --exec`, are not, since each of them takes different options.
 - Unquoted globs are only reported if they contain `**/`: many tools expand simpler globs themselves when the shell doesn't.
 - A script that isn't valid shell syntax is only checked for cmd.exe syntax like `if exist`.

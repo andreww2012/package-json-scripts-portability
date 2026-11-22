@@ -5,7 +5,7 @@ import {analyzeWithRunners} from './script-analyzer.ts';
 import {type MaybeReadonlyArray, arrayIntersection, arrayify, isEqual} from './utils.ts';
 
 export interface AnalyzeScriptOptions {
-  /** Names of the package's dependencies, e.g. to detect del-cli's `del` alias */
+  /** Names of the package's dependencies, e.g. to detect `del-cli`'s `del` alias */
   dependencies?: readonly string[];
 
   /** Commands that shouldn't be reported */
@@ -27,7 +27,7 @@ export interface AnalyzeScriptOptions {
    */
   runnerAgnosticScripts?: boolean | Readonly<Record<string, boolean>>;
 
-  /** The script's name in package.json, e.g. `postinstall`, to tell if it's runner-agnostic */
+  /** The script's name in `package.json`, e.g. `postinstall`, to tell if it's runner-agnostic */
   scriptName?: string;
 
   /** Whether pnpm's `shell-emulator` setting is on, so that it runs the script with Yarn's shell */
@@ -73,7 +73,7 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, readonly RunnerIssue[]>
 };
 
 /**
- * Analyzes a package.json script for constructs that don't work (the same) on all platforms.
+ * Analyzes a `package.json` script for constructs that don't work (the same) on all platforms.
  * @param script The script's source
  * @param options Analysis options
  * @returns The issues found, with offsets relative to the script

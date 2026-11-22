@@ -22,7 +22,7 @@
   "js/ts.tsdk.path": "node_modules/typescript/lib",
   // The same TypeScript 7 as the `ts` script
   "js/ts.experimental.useTsgo": true,
-  // Same as `header-max-length` in the commitlint config
+  // Same as `header-max-length` in the `commitlint` config
   "git.inputValidationSubjectLength": 120,
 
   "cSpell.enabled": true,

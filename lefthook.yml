@@ -17,7 +17,7 @@ post-checkout:
     - rebase # Installing here is too early: this hook runs before the commits are applied
   commands:
     install:
-      # This diff replaces `glob`, as lefthook doesn't pass the hook arguments to a `files` command
+      # This diff replaces `glob`, as `lefthook` doesn't pass the hook arguments to `files` commands
       # When the diff fails, for example in a new worktree, the install runs too
       run: >-
         git diff --quiet {1} {2} -- pnpm-lock.yaml pnpm-workspace.yaml patches 2>/dev/null ||

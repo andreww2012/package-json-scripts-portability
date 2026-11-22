@@ -281,7 +281,7 @@ class ScriptAnalyzer {
   }
 
   #checkComments(statements: readonly Statement[], context: Context) {
-    // unbash skips comments, so look for a `#` at a word boundary outside of all statements
+    // `unbash` skips comments, so look for a `#` at a word boundary outside of all statements
     let position = 0;
 
     [...statements, undefined].forEach((statement, index) => {
@@ -863,7 +863,7 @@ export const analyzeWithRunners = (
         source: script,
       });
 
-      return [runner, analyzer.issues] as const;
+      return [runner, analyzer.issues];
     }),
   );
 };

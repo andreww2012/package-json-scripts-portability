@@ -70,7 +70,7 @@ export class Reporter {
   readonly issues: RunnerIssue[] = [];
 
   /**
-   * Length of the analyzed script, which unbash's positions can exceed, e.g. after a trailing `\`
+   * Length of the analyzed script, which `unbash`'s positions can exceed, e.g. after a trailing `\`
    */
   readonly #length: number;
   readonly #seen = new Set<string>();

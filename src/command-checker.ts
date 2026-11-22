@@ -57,7 +57,7 @@ const EXIT_STATUSES: ReadonlyMap<string, string> = new Map([
   ['true', '0'],
 ]);
 
-/** Options of npx and `npm exec` that take a shell string */
+/** Options of `npx` and `npm exec` that take a shell string */
 const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
 
 /** Options of pnpm and aube that make the command and its arguments a shell line */
@@ -257,7 +257,7 @@ export class CommandChecker {
    * @param argumentWords The words that follow it
    * @param context Where the command is
    * @param depth How many commands run this command, e.g. 1 for `rm` in `cross-env A=1 rm`
-   * @param isCrossSpawned Whether cross-spawn runs the command (in `cross-env`), which works with
+   * @param isCrossSpawned Whether `cross-spawn` runs the command (in `cross-env`), which works with
    * paths and shebangs on Windows
    * @returns What the command is, and what it runs
    */
@@ -437,7 +437,7 @@ export class CommandChecker {
       const index = values.findIndex((value) => isShortOptionCluster(value, 'c'));
       return index === -1 ? -1 : index + 1;
     };
-    // `-c`/`--call` of npx and `npm exec` (a shell string), which is only their option before the
+    // `-c`/`--call` of `npx` and `npm exec` (a shell string), which is only their option before the
     // command they run
     const callIndex = (start: number, valueOptions: readonly string[]) => {
       const commandIndex = findCommandIndex(values, start, [...valueOptions, ...CALL_OPTIONS]);

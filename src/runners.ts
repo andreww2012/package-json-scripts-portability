@@ -31,7 +31,7 @@ export const RUNNER_AGNOSTIC_SCRIPTS: ReadonlySet<string> = new Set([
 
 /**
  * Checks whether any package manager may run a script.
- * @param scriptName The script's name in package.json
+ * @param scriptName The script's name in `package.json`
  * @param scripts `true` for all scripts, `false` for none, or whether each script is
  * runner-agnostic, on top of the defaults
  * @returns Whether the script is runner-agnostic
@@ -122,7 +122,7 @@ const UNBOUNDED_RANGE = /^\s*>/;
 
 /**
  * Gets the runner for a package manager, e.g. the one in the `packageManager` or
- * `devEngines.packageManager` field of package.json.
+ * `devEngines.packageManager` field of `package.json`.
  * @param name Name of the package manager, e.g. `yarn`
  * @param version Its version or version range, which tells Yarn v1 from Yarn v2+, and pnpm v10
  * from later versions, e.g. `1.22.22`
