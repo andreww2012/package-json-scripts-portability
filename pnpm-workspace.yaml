@@ -1,6 +1,7 @@
 # Makes Changesets name git tags `<package-name>@<version>` instead of `v<version>`
 packages:
   - ./
+disallowWorkspaceCycles: true
 
 saveExact: true
 autoDedupe: true
@@ -25,6 +26,7 @@ trustPolicyIgnoreAfter: 43200 # 30 days in minutes
 trustPolicyExclude:
   # Published by hand after its release workflow failed. Same code as v2.2.1
   - lefthook@2.2.2
+trustPolicyExcludePrune: true
 
 audit:
   ignore: []

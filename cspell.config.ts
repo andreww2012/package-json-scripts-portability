@@ -1,26 +1,17 @@
-import type {CSpellSettings} from 'cspell';
+import {cspellConfig} from '@andreww2012/cspell-config';
 
-const GLOBALLY_IGNORED_WORDS: Readonly<Record<string, string[]>> = {
-  names: ['andreww', 'unbash', 'utilery'],
-  utilities: ['arrayify'],
-  englishIshWords: ['redirections', 'subshell'],
-  // Commands that the analyzer knows, and their options
-  commands: ['aubx', 'bunx', 'fuser', 'nohup', 'regextype', 'xcopy'],
-  // Shell variables
-  shell: ['EPOCHSECONDS'],
-};
-
-export default {
-  useGitignore: true,
-  enableGlobDot: true,
-  ignorePaths: [
-    '**/.gitignore',
-    '**/.git/**',
-    '**/pnpm-lock.yaml',
-    'patches/**',
-    '.agents/guidelines.md',
-  ],
-  dictionaries: ['npm', 'node', 'typescript', 'fullstack', 'bash', 'powershell'],
-  words: Object.values(GLOBALLY_IGNORED_WORDS).flat(),
-  overrides: [],
-} satisfies CSpellSettings;
+export default cspellConfig({
+  // eslint-disable-next-line node/no-unsupported-features/node-builtins -- Only used in development
+  cwd: import.meta.dirname,
+  ignorePaths: ['.agents/guidelines.md'],
+  dictionaries: ['bash', 'powershell'],
+  words: {
+    names: ['andreww', 'unbash', 'utilery'],
+    utilities: ['arrayify'],
+    englishIshWords: ['redirections', 'subshell'],
+    // Commands that the analyzer knows, and their options
+    commands: ['aubx', 'bunx', 'fuser', 'nohup', 'regextype', 'xcopy'],
+    // Shell variables
+    shell: ['EPOCHSECONDS'],
+  },
+});

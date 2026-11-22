@@ -48,4 +48,6 @@ pre-commit:
 commit-msg:
   commands:
     commitlint:
-      run: pnpm exec commitlint --edit {0}
+      # Positional arguments are inserted as is, and in a worktree, the message file's path is
+      # absolute: it has spaces if the main repository's path has them
+      run: pnpm exec commitlint --edit "{1}"

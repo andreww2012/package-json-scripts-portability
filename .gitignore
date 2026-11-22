@@ -1,8 +1,6 @@
 ### `typescript-project-template` additions:
 
-.claude/worktrees/
-
-### Node.JS gitignore: https://github.com/github/gitignore/blob/0e5d690153ca3da8a4a1aef2d053406f408f531c/Node.gitignore
+### Node.JS gitignore: https://github.com/github/gitignore/blob/8ba69a4220df77b696fe97b60fb70eb668fb00e1/Node.gitignore
 
 # Logs
 logs
@@ -89,6 +87,9 @@ out
 dist
 .output
 
+# NitroJS
+.nitro/
+
 # Gatsby files
 .cache/
 
@@ -151,7 +152,7 @@ vite.config.ts.timestamp-*
 # Turbo Repo
 .turbo
 
-### MacOS gitignore: https://github.com/github/gitignore/blob/0e5d690153ca3da8a4a1aef2d053406f408f531c/Global/macOS.gitignore
+### MacOS gitignore: https://github.com/github/gitignore/blob/8ba69a4220df77b696fe97b60fb70eb668fb00e1/Global/macOS.gitignore
 
 # General
 .DS_Store
@@ -159,7 +160,8 @@ vite.config.ts.timestamp-*
 __MACOSX/
 .AppleDouble
 .LSOverride
-Icon[]
+Icon[
+]
 
 # Resource forks
 ._*
@@ -180,7 +182,8 @@ Icon[]
 .file
 .disk_label*
 lost+found
-.HFS+ Private Directory Data[]
+.HFS+ Private Directory Data[
+]
 
 # Directories potentially created on remote AFP share
 .AppleDB
@@ -211,7 +214,7 @@ Backups.backupdb
 MobileBackups.trash
 tmbootpicker.efi
 
-### JetBrains gitignore: https://github.com/github/gitignore/blob/0e5d690153ca3da8a4a1aef2d053406f408f531c/Global/JetBrains.gitignore
+### JetBrains gitignore: https://github.com/github/gitignore/blob/8ba69a4220df77b696fe97b60fb70eb668fb00e1/Global/JetBrains.gitignore
 
 # Covers JetBrains IDEs: IntelliJ, GoLand, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
 # Reference: https://intellij-support.jetbrains.com/hc/en-us/articles/206544839
@@ -288,7 +291,10 @@ http-client.private.env.json
 # Github Copilot persisted session migrations, see: https://github.com/microsoft/copilot-intellij-feedback/issues/712#issuecomment-3322062215
 .idea/**/copilot.data.migration.*.xml
 
-### Agents gitignore: https://github.com/github/gitignore/blob/0e5d690153ca3da8a4a1aef2d053406f408f531c/Global/Agents.gitignore
+# Kubernetes Plugin
+.idea/kubernetes/configs/kubeconfig_*
+
+### Agents gitignore: https://github.com/github/gitignore/blob/8ba69a4220df77b696fe97b60fb70eb668fb00e1/Global/Agents.gitignore
 
 # AI agents and assistants
 
@@ -301,6 +307,7 @@ http-client.private.env.json
 # Claude Code
 .claude/*.local.json
 .claude/**/*.log
+.claude/worktrees/
 CLAUDE.local.md
 
 # Gemini CLI

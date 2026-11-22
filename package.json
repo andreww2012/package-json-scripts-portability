@@ -39,7 +39,7 @@
     "u": "ncu",
     "u:m": "ncu -t minor",
     "u:pm": "pnpm self-update",
-    "u:actions": "actions-up",
+    "u:actions": "actions-up --style preserve",
     "deps:audit": "pnpm audit --audit-level high",
     "deps:audit:fix": "nr deps:audit --fix override",
     "deps:audit:fix:update": "nr deps:audit --fix update",
@@ -73,6 +73,7 @@
   },
   "devDependencies": {
     "@andreww2012/commitlint-config": "0.2.0",
+    "@andreww2012/cspell-config": "0.0.1",
     "@andreww2012/npm-check-updates-config": "0.1.1",
     "@antfu/ni": "30.6.0",
     "@arethetypeswrong/core": "0.18.5",
