@@ -20,6 +20,23 @@ minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list 
 minimumReleaseAgeExcludePrune: true
 minimumReleaseAgeExclude: # []
   - unbash@6.0.5
+  - '@pnpm/exe.android-arm64@12.23.0'
+  - '@pnpm/exe.android-x64@12.23.0'
+  - '@pnpm/exe.darwin-arm64@12.23.0'
+  - '@pnpm/exe.darwin-x64@12.23.0'
+  - '@pnpm/exe.freebsd-x64@12.23.0'
+  - '@pnpm/exe.linux-arm64-musl@12.23.0'
+  - '@pnpm/exe.linux-arm64@12.23.0'
+  - '@pnpm/exe.linux-loong64@12.23.0'
+  - '@pnpm/exe.linux-ppc64@12.23.0'
+  - '@pnpm/exe.linux-riscv64@12.23.0'
+  - '@pnpm/exe.linux-s390x@12.23.0'
+  - '@pnpm/exe.linux-x64-musl@12.23.0'
+  - '@pnpm/exe.linux-x64@12.23.0'
+  - '@pnpm/exe.netbsd-x64@12.23.0'
+  - '@pnpm/exe.win32-arm64@12.23.0'
+  - '@pnpm/exe.win32-x64@12.23.0'
+  - pnpm@12.23.0
 
 trustPolicy: no-downgrade
 trustPolicyIgnoreAfter: 43200 # 30 days in minutes
