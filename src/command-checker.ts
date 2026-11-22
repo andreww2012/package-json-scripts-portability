@@ -1,5 +1,4 @@
 import type {CommandArgument, Redirection, Statement, Word} from 'unbash';
-import type {AnalyzeScriptOptions} from './analyze-script.ts';
 import {checkCommandUsage} from './command-usage.ts';
 import {
   CMD_BUILTINS,
@@ -136,23 +135,29 @@ type NestedWordsAnalyzer = (
   options: NestedWordsOptions,
 ) => void;
 
+/** The analysis options that command checks use, prepared once for all runners */
+export interface CommandOptions {
+  /** Names of the package's dependencies */
+  dependencies: readonly string[];
+  /** Commands that shouldn't be reported */
+  ignoredCommands: ReadonlySet<string>;
+}
+
 /** Checks commands, e.g. whether they're available everywhere, and the commands they run */
 export class CommandChecker {
   readonly #analyzeNestedWords: NestedWordsAnalyzer;
-  readonly #dependencies: ReadonlySet<string>;
-  readonly #ignoredCommands: ReadonlySet<string>;
+  readonly #options: CommandOptions;
   /** Fixes that depend on where a command is, by the command's name, e.g. `exit 0` for `true` */
   readonly #positionalFixes = new Map<Word, ScriptFix>();
   readonly #reporter: Reporter;
 
   constructor(
     reporter: Reporter,
-    {dependencies = [], ignoreCommands = []}: AnalyzeScriptOptions,
+    options: CommandOptions,
     analyzeNestedWords: NestedWordsAnalyzer,
   ) {
     this.#reporter = reporter;
-    this.#dependencies = new Set(dependencies);
-    this.#ignoredCommands = new Set(ignoreCommands);
+    this.#options = options;
     this.#analyzeNestedWords = analyzeNestedWords;
   }
 
@@ -221,7 +226,7 @@ export class CommandChecker {
     argumentWords: readonly Word[],
     context: Context,
   ) {
-    if (name === 'del' && this.#dependencies.has('del-cli')) {
+    if (name === 'del' && this.#options.dependencies.includes('del-cli')) {
       return this.#reporter.report(
         context,
         nameWord,
@@ -304,10 +309,13 @@ export class CommandChecker {
       return result;
     }
 
+    const values = argumentWords.map(staticValue);
+
     // An ignored command isn't reported, but the commands it runs are
-    if (this.#ignoredCommands.has(name)) {
-      // Not `||`: the target of a command named `""` is empty
-      result.target = this.#checkWrapped(name, argumentWords, context, depth)?.target ?? name;
+    if (this.#options.ignoredCommands.has(name)) {
+      result.target =
+        // Not `||`: the target of a command named `""` is empty
+        this.#checkWrapped(name, argumentWords, values, context, depth)?.target ?? name;
       return result;
     }
 
@@ -367,34 +375,41 @@ export class CommandChecker {
       covered.push(...this.#checkCommandAvailability(name, nameWord, argumentWords, context));
     }
 
-    covered.push(...this.#checkUsage(name, nameWord, argumentWords, context));
+    covered.push(...this.#checkUsage(name, nameWord, argumentWords, values, context));
     this.#reporter.markFailures(firstIssue);
 
     // The commands that it runs aren't reported on the platforms where it's reported already
     // Not `||`: the target of a command named `""` is empty
     result.target =
-      this.#checkWrapped(name, argumentWords, withCovered(context, covered), depth)?.target ?? name;
+      this.#checkWrapped(name, argumentWords, values, withCovered(context, covered), depth)
+        ?.target ?? name;
 
     return result;
   }
 
-  #checkUsage(name: string, nameWord: Word, argumentWords: Word[], context: Context) {
-    const values = argumentWords.map(staticValue);
+  #checkUsage(
+    name: string,
+    nameWord: Word,
+    argumentWords: readonly Word[],
+    values: readonly (string | undefined)[],
+    context: Context,
+  ) {
     // A wrapper's options end where the command it runs starts, e.g. `xargs prettier --write`
     const wrapperValueOptions = WRAPPER_VALUE_OPTIONS.get(name);
     const commandIndex = wrapperValueOptions
       ? findCommandIndex(values, 0, wrapperValueOptions)
       : -1;
+    const separator = values.indexOf('--');
     const optionsEnd = Math.min(
-      values.includes('--') ? values.indexOf('--') : values.length,
+      separator === -1 ? values.length : separator,
       commandIndex === -1 ? values.length : commandIndex,
     );
 
-    return checkCommandUsage(
-      name,
-      argumentWords.map((argument, index) => ({text: argument.text, value: values[index]})),
-      {bash: context.shell === 'bash', optionsEnd, portable: context.portable},
-    ).flatMap(({argumentIndex, data, fix, messageId, platforms}) => {
+    return checkCommandUsage(name, values, argumentWords, {
+      bash: context.shell === 'bash',
+      optionsEnd,
+      portable: context.portable,
+    }).flatMap(({argumentIndex, data, fix, messageId, platforms}) => {
       const fixedWord = fix && argumentWords[fix.argumentIndex];
       return this.#reporter.report(
         context,
@@ -414,9 +429,13 @@ export class CommandChecker {
     });
   }
 
-  #checkWrapped(name: string, argumentWords: Word[], context: Context, depth: number) {
-    const values = argumentWords.map(staticValue);
-
+  #checkWrapped(
+    name: string,
+    argumentWords: Word[],
+    values: readonly (string | undefined)[],
+    context: Context,
+    depth: number,
+  ) {
     // `.` is the package in the current directory for `npx` and the like, not a command
     const invoke = (index: number, nestedContext = context, isCrossSpawned = false) => {
       const word = argumentWords[index];

@@ -9,7 +9,7 @@ import {
 } from './messages.ts';
 import {POSIX_PLATFORMS} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
-import {mapGetOrInsert, setHas} from './utils.ts';
+import {mapGetOrInsert, setHas, sortedArrayInsertionIndex} from './utils.ts';
 import type {WordChecker} from './word-checker.ts';
 import {POSIX_PATH, WHITESPACE, staticValue} from './words.ts';
 
@@ -49,7 +49,7 @@ export const doesRedirectOutput = (redirection: Redirection) => {
 
 /** Checks redirections, e.g. for Bash-specific operators and device files */
 export class RedirectionChecker {
-  /** End offsets of here-documents, by the source that they're in */
+  /** End offsets of here-documents in ascending order, by the source that they're in */
   readonly hereDocumentEnds = new Map<string, number[]>();
   readonly #reporter: Reporter;
   readonly #words: WordChecker;
@@ -98,7 +98,9 @@ export class RedirectionChecker {
           syntax: `The here-document \`${redirection.operator}\``,
         });
         if (redirection.closing) {
-          mapGetOrInsert(this.hereDocumentEnds, context.source, []).push(redirection.closing.end);
+          const ends = mapGetOrInsert(this.hereDocumentEnds, context.source, []);
+          const {end} = redirection.closing;
+          ends.splice(sortedArrayInsertionIndex(ends, end, {rightmost: true}), 0, end);
         }
         return;
       }

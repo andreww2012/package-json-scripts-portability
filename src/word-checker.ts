@@ -324,11 +324,14 @@ export class WordChecker {
    * @param context Where the word is
    */
   #checkCarriageReturn(word: Word, context: Context) {
+    if (context.portable || !word.text.includes('\r')) {
+      return;
+    }
+
     const literal = word.parts
       ? word.parts.find((part) => part.type === 'Literal' && part.text.includes('\r'))
       : word;
-
-    if (!literal?.text.includes('\r') || context.portable) {
+    if (!literal) {
       return;
     }
 
@@ -689,7 +692,9 @@ export class WordChecker {
       hasSingleQuotes: false,
       printedToTerminal: options.printedToTerminal || false,
     };
-    this.#checkParts(word.parts || [], context, state);
+    if (word.parts) {
+      this.#checkParts(word.parts, context, state);
+    }
 
     const {globPosition} = state;
     const hasGlob = globPosition != null;
@@ -750,16 +755,17 @@ export class WordChecker {
       });
     }
 
-    const isPattern = setHas(PATTERN_COMMANDS, options.command);
-    const unquoted = text.replaceAll('"', '');
-    const path = substringAfterLast(unquoted, '=');
+    // Most words have no backslashes, so they need none of the path checks
+    const hasBackslash = text.includes('\\');
+    const path = hasBackslash ? substringAfterLast(text.replaceAll('"', ''), '=') : '';
+    const isBackslashPath = hasBackslash && BACKSLASH_PATH.test(path);
 
     // Require a hint that it's a path (relative prefix, extension, or multiple separators), as
     // backslashes are also used for escapes
     if (
-      !isPattern &&
+      isBackslashPath &&
+      !setHas(PATTERN_COMMANDS, options.command) &&
       !state.hasSingleQuotes &&
-      BACKSLASH_PATH.test(path) &&
       (WINDOWS_PATH_PREFIX.test(path) ||
         FILE_EXTENSION.test(path) ||
         MULTIPLE_BACKSLASHES.test(path)) &&
@@ -788,7 +794,9 @@ export class WordChecker {
     }
 
     // e.g. `dist\*` in `del /q dist\*` and `.\node_modules\ ` in `rd .\node_modules\ -r`
-    if (!BACKSLASH_PATH.test(path) && !WINDOWS_PATH_PREFIX.test(path)) {
+    const isWindowsPath = isBackslashPath || (hasBackslash && WINDOWS_PATH_PREFIX.test(path));
+    // Without backslashes, there are no escapes, so only a caret can be reported
+    if (!isWindowsPath && (hasBackslash || text.includes('^'))) {
       this.#checkEscapes(word, context);
     }
 

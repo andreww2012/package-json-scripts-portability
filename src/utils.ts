@@ -16,6 +16,7 @@ export {
   parseSemver,
   setHas,
   slidingWindow,
+  sortedArrayInsertionIndex,
   substringAfterLast,
   substringBefore,
   toForwardSlashes,

@@ -1,5 +1,5 @@
 import {PLATFORMS} from './platforms.ts';
-import {type RunnerIssue, type ScriptIssue, issueKey} from './reporter.ts';
+import type {RunnerIssue, ScriptIssue} from './reporter.ts';
 import {PACKAGE_MANAGER_RUNNERS, type Runner, isRunnerAgnosticScript} from './runners.ts';
 import {analyzeWithRunners} from './script-analyzer.ts';
 import {type MaybeReadonlyArray, arrayIntersection, arrayify, isEqual} from './utils.ts';
@@ -43,25 +43,31 @@ const COMMENT_LINE = /^\s*#[^\n]*$/;
  * Merges the issues found with each runner, e.g. `rm` with both npm and pnpm.
  * A merged issue is on the platforms where any of the runners has it, and keeps its fix only if
  * all of them suggest the same one.
- * @param issuesByRunner The issues found with each runner
+ * @param issuesByRunner The issues found with each runner, by their keys
  * @returns The merged issues
  */
-const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, readonly RunnerIssue[]>) => {
+const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, RunnerIssue>>) => {
   const merged = new Map<string, ScriptIssue>();
+  // Runners that run the script the same way share their issues, which are only merged once
+  const mergedIssues = new Set<ReadonlyMap<string, RunnerIssue>>();
 
   issuesByRunner.forEach((issues, runner) => {
-    issues.forEach((issue) => {
-      const key = issueKey(issue);
+    const isMerged = mergedIssues.has(issues);
+    mergedIssues.add(issues);
+
+    issues.forEach((issue, key) => {
       const existing = merged.get(key);
 
       if (existing) {
-        existing.platforms = arrayIntersection(PLATFORMS, [
-          ...existing.platforms,
-          ...issue.platforms,
-        ]);
         existing.runners.push(runner);
-        if (!isEqual(existing.fix, issue.fix)) {
-          existing.fix = undefined;
+        if (!isMerged) {
+          existing.platforms = arrayIntersection(PLATFORMS, [
+            ...existing.platforms,
+            ...issue.platforms,
+          ]);
+          if (!isEqual(existing.fix, issue.fix)) {
+            existing.fix = undefined;
+          }
         }
       } else {
         merged.set(key, {...issue, runners: [runner]});

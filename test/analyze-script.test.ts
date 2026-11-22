@@ -1226,6 +1226,21 @@ describe('analyzeScript', () => {
       ['rm -rf dist || rmdir /s /q dist || true', [['unsupportedCommand', 'true', 'win32']]],
       // Not an alternative for another platform
       ['rm -rf dist || echo failed', [['unsupportedCommand', 'rm', 'win32']]],
+      // Alternatives that aren't a fallback don't hide one that follows them
+      [
+        'rm -rf a || rm -rf b && rm -rf c || rd /s /q c',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['unsupportedCommand', 'rm', 'win32'],
+        ],
+      ],
+      [
+        'rm -rf a || rm -rf b || echo x || rm -rf c || rd /s /q c',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['unsupportedCommand', 'rm', 'win32'],
+        ],
+      ],
       [
         'rm -rf dist || true',
         [
@@ -1487,9 +1502,26 @@ describe('analyzeScript', () => {
         ],
       ],
       ['rm -rf dist', ['npm', 'npm'], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
+      // Runners that run scripts the same way are analyzed once, e.g. aube and pnpm
+      [
+        'rm -rf dist',
+        ['pnpm', 'npm', 'aube'],
+        [['unsupportedCommand', 'rm', 'win32', 'pnpm,npm,aube']],
+      ],
+      [
+        'cross-env CONFIG=${HOME}/.config node x.js',
+        ['pnpm', 'npm', 'aube', 'pnpm-10'],
+        [['inconsistentBehavior', '${HOME}', 'win32', 'pnpm,aube']],
+      ],
       ['rm -rf dist', [], [['unsupportedCommand', 'rm', 'win32', 'npm']]],
     ])('%j with %j', (script, runner, expected) => {
       expect(summarizeRunners(script, {runner})).toStrictEqual(expected);
+    });
+
+    it("analyzes pnpm with its shell emulator apart from aube, which doesn't have one", () => {
+      expect(
+        summarizeRunners('a; b', {runner: ['aube', 'pnpm'], shellEmulator: true}),
+      ).toStrictEqual([['unsupportedSyntax', ';', 'win32', 'aube']]);
     });
 
     it('keeps a fix that all runners suggest', () => {

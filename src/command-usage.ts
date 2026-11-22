@@ -18,11 +18,9 @@ import {
 import {setHas, substringBefore} from './utils.ts';
 import {ASSIGNMENT, isShortOptionCluster} from './words.ts';
 
-interface CommandArgument {
-  /** The argument's source text */
+interface CommandWord {
+  /** The word's source text */
   text: string;
-  /** The argument's value, or `undefined` if it depends on expansions */
-  value: string | undefined;
 }
 
 /** A fix that replaces an argument */
@@ -110,18 +108,20 @@ const STAT_FORMAT_OPTION = /^-[cf]/;
 /**
  * Checks a command's options for ones that don't work (the same) on all platforms, e.g. `sed -i`.
  * @param name Name that the command was invoked with, e.g. `sed`
- * @param commandArguments The words that follow the command name
+ * @param values Values of the words that follow the command name, or `undefined` for the ones that
+ * depend on expansions
+ * @param words The words themselves
  * @param options Where the command runs, and where its options end
  * @returns The issues found
  */
 export const checkCommandUsage = (
   name: string,
-  commandArguments: readonly CommandArgument[],
+  values: readonly (string | undefined)[],
+  words: readonly CommandWord[],
   options: UsageOptions,
 ) => {
   const {bash, optionsEnd, portable} = options;
-  const values = commandArguments.map(({value}) => value);
-  const textOf = (index: number) => commandArguments[index]?.text || '';
+  const textOf = (index: number) => words[index]?.text || '';
   const issues: UsageIssue[] = [];
   const optionIndex = (isMatch: (value: string, index: number) => boolean) =>
     values.findIndex(

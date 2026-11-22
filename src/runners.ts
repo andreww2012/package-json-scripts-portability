@@ -4,6 +4,7 @@ import {
   arrayDifference,
   arrayIntersection,
   isSemverInRange,
+  mapGetOrInsertComputed,
   parseSemver,
   setHas,
 } from './utils.ts';
@@ -119,6 +120,12 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
   },
 };
 
+/** With `shell-emulator` on, pnpm runs the scripts with Yarn's portable shell */
+const SHELL_EMULATOR_TRAITS: Readonly<Partial<Record<Runner, RunnerTraits>>> = {
+  pnpm: {...RUNNER_TRAITS.pnpm, portableShell: true},
+  'pnpm-10': {...RUNNER_TRAITS['pnpm-10'], portableShell: true},
+};
+
 /** Package managers whose runner always has the same name, i.e. all of them but pnpm and Yarn */
 const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'upm']);
 
@@ -199,13 +206,24 @@ export const getRunner = (name: string, version = '') => {
  * @returns The runner's traits
  */
 export const runnerTraits = (runner: Runner, isShellEmulated: boolean) =>
-  // With `shell-emulator` on, pnpm runs the scripts with Yarn's portable shell
-  isShellEmulated && (runner === 'pnpm' || runner === 'pnpm-10')
-    ? {
-        ...RUNNER_TRAITS[runner],
-        portableShell: true,
-      }
-    : RUNNER_TRAITS[runner];
+  (isShellEmulated && SHELL_EMULATOR_TRAITS[runner]) || RUNNER_TRAITS[runner];
+
+const behaviorKeys = new Map<RunnerTraits, string>();
+
+/**
+ * Gets what tells apart how runners run the scripts.
+ * Runners with the same behavior have the same issues, e.g. aube and pnpm.
+ * @param traits A runner's traits
+ * @returns A string that is the same for the same behavior
+ */
+export const runnerBehavior = (traits: RunnerTraits) =>
+  mapGetOrInsertComputed(
+    behaviorKeys,
+    traits,
+    // Reports only name the runner when it doesn't set some variables
+    ({label, packageManagerVariables, ...flags}) =>
+      JSON.stringify([flags, packageManagerVariables && label]),
+  );
 
 /**
  * Formats runners as a list for people, e.g. "pnpm and Yarn v1".

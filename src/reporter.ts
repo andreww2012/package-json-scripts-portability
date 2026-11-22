@@ -55,7 +55,7 @@ export type RunnerIssue = OmitStrict<ScriptIssue, 'runners'>;
  * @param issue The issue
  * @returns A string that is the same for the same issues
  */
-export const issueKey = (issue: OmitStrict<RunnerIssue, 'fix' | 'platforms'>) =>
+const issueKey = (issue: OmitStrict<RunnerIssue, 'fix' | 'platforms'>) =>
   JSON.stringify([issue.messageId, issue.pos, issue.end, issue.data]);
 
 /** Platforms on which each kind of syntax doesn't work, by the shell that runs it */
@@ -85,7 +85,7 @@ export class Reporter {
     this.#length = length;
   }
 
-  /** The issues without duplicates, each on the platforms of all of its duplicates */
+  /** The issues without duplicates by their keys, each on the platforms of all of its duplicates */
   get uniqueIssues() {
     const unique = new Map<string, RunnerIssue>();
     this.issues.forEach((issue) => {
@@ -101,7 +101,7 @@ export class Reporter {
           : issue,
       );
     });
-    return [...unique.values()];
+    return unique;
   }
 
   isFailure(issue: RunnerIssue) {

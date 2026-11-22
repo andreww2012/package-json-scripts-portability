@@ -15,7 +15,12 @@ import {
   parse,
 } from 'unbash';
 import type {AnalyzeScriptOptions} from './analyze-script.ts';
-import {CommandChecker, MAX_DEPTH, type NestedWordsOptions} from './command-checker.ts';
+import {
+  CommandChecker,
+  type CommandOptions,
+  MAX_DEPTH,
+  type NestedWordsOptions,
+} from './command-checker.ts';
 import {SHELLS, SHELL_STATE_COMMANDS} from './commands.ts';
 import {
   type Context,
@@ -37,8 +42,13 @@ import {
 import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
 import {RedirectionChecker, doesRedirectOutput} from './redirection-checker.ts';
 import {Reporter, type RunnerIssue} from './reporter.ts';
-import {type Runner, type RunnerTraits, runnerTraits} from './runners.ts';
-import {arrayIsSubset, mapGetOrInsertComputed, substringBefore} from './utils.ts';
+import {type Runner, type RunnerTraits, runnerBehavior, runnerTraits} from './runners.ts';
+import {
+  arrayIsSubset,
+  mapGetOrInsertComputed,
+  sortedArrayInsertionIndex,
+  substringBefore,
+} from './utils.ts';
 import {CMD_STATEMENTS, WordChecker} from './word-checker.ts';
 import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE, staticValue} from './words.ts';
 
@@ -132,12 +142,13 @@ const nestedSource = (parts: readonly (DoubleQuotedChild | WordPart)[]): string 
     .join('');
 
 /**
- * Finds the end of a run of `||` alternatives that each break on some platform, but together work
- * on all platforms, e.g. `open x || xdg-open x || start x`.
+ * Looks for a run of `||` alternatives that each break on some platform, but together work on all
+ * platforms, e.g. `open x || xdg-open x || start x`.
  * @param node The list that the alternatives are in
  * @param platformsOf Gets the platforms on which a command of the list fails
  * @param first Index of the run's first command
- * @returns Index of the run's last command, if there's such a run
+ * @returns Index of the last command that was looked at, and whether the commands up to it are
+ * such a run
  */
 const findFallbackEnd = (
   node: AndOr,
@@ -145,25 +156,23 @@ const findFallbackEnd = (
   first: number,
 ) => {
   let unsupported = platformsOf(first);
+  let last = first;
 
-  for (
-    let last = first + 1;
-    unsupported.size > 0 && last < node.commands.length && node.operators[last - 1] === '||';
-    last++
-  ) {
+  while (unsupported.size > 0 && last + 1 < node.commands.length && node.operators[last] === '||') {
+    last++;
     const platforms = platformsOf(last);
     // The alternative isn't platform-specific, e.g. `rm -rf dist || echo failed`
     if (platforms.size === 0) {
-      return undefined;
+      break;
     }
 
     unsupported = unsupported.intersection(platforms);
     if (unsupported.size === 0) {
-      return last;
+      return {isFallback: true, last};
     }
   }
 
-  return undefined;
+  return {isFallback: false, last};
 };
 
 class ScriptAnalyzer {
@@ -179,7 +188,7 @@ class ScriptAnalyzer {
 
   constructor(
     length: number,
-    options: AnalyzeScriptOptions,
+    commandOptions: CommandOptions,
     traits: RunnerTraits,
     parsedScripts: Map<string, ParsedScript>,
   ) {
@@ -194,9 +203,13 @@ class ScriptAnalyzer {
     );
     this.#lineBreaks = new LineBreakChecker(this.#reporter);
     this.#redirections = new RedirectionChecker(this.#reporter, this.#words);
-    this.#commands = new CommandChecker(this.#reporter, options, (words, context, nested) => {
-      this.#analyzeNestedWords(words, context, nested);
-    });
+    this.#commands = new CommandChecker(
+      this.#reporter,
+      commandOptions,
+      (words, context, nested) => {
+        this.#analyzeNestedWords(words, context, nested);
+      },
+    );
   }
 
   get issues() {
@@ -338,10 +351,14 @@ class ScriptAnalyzer {
    * @returns The offset in the source
    */
   #statementEnd(statement: Statement, nextStart: number, source: string) {
-    const hereDocumentEnds = (this.#redirections.hereDocumentEnds.get(source) || []).filter(
-      (end) => end <= nextStart,
-    );
-    return Math.max(statement.end, ...hereDocumentEnds);
+    const hereDocumentEnds = this.#redirections.hereDocumentEnds.get(source);
+    if (!hereDocumentEnds) {
+      return statement.end;
+    }
+
+    // How many here-documents end before the next statement: the last of them ends the latest
+    const count = sortedArrayInsertionIndex(hereDocumentEnds, nextStart, {rightmost: true});
+    return Math.max(statement.end, hereDocumentEnds[count - 1] || 0);
   }
 
   /**
@@ -381,6 +398,10 @@ class ScriptAnalyzer {
    * issues
    */
   #dropPlatformFallbacks(node: AndOr, starts: readonly number[]) {
+    if (!node.operators.includes('||')) {
+      return;
+    }
+
     const issuesOf = (index: number) =>
       this.#reporter.issues.slice(starts[index], starts[index + 1]);
     // Where each alternative fails, e.g. as its command isn't available, unlike where only its
@@ -398,14 +419,14 @@ class ScriptAnalyzer {
 
     let first = 0;
     while (first < node.commands.length) {
-      const last = findFallbackEnd(node, platformsOf, first);
-      if (last == null) {
-        first++;
-      } else {
-        // Later alternatives are still reported, e.g. `true` in `rm ... || rmdir /s ... || true`
+      const {isFallback, last} = findFallbackEnd(node, platformsOf, first);
+      if (isFallback) {
         runs.push([first, last]);
-        first = last + 1;
       }
+      // Later alternatives are still reported, e.g. `true` in `rm ... || rmdir /s ... || true`.
+      // And where no run starts at a command, none starts at the ones that were looked at after
+      // it: they fail on the same platforms or more, and end at the same command
+      first = last + 1;
     }
 
     // Where an alternative fails, the next one runs, but its issues still apply elsewhere, e.g.
@@ -844,6 +865,10 @@ class ScriptAnalyzer {
       }
     });
 
+    if (backgroundOperators.length === 0) {
+      return;
+    }
+
     // Commands that only exist on Windows mean that `&` is meant for cmd.exe, e.g. in
     // `rd /s /q dist & npm run build`
     const isForWindows = this.#reporter.issues
@@ -898,7 +923,7 @@ class ScriptAnalyzer {
  * @param script The script's source
  * @param options Analysis options
  * @param runners What runs the script
- * @returns The issues found with each runner
+ * @returns The issues found with each runner, by their keys
  */
 export const analyzeWithRunners = (
   script: string,
@@ -907,25 +932,35 @@ export const analyzeWithRunners = (
 ) => {
   // Parsing doesn't depend on the runner, so each source is parsed once for all of them
   const parsedScripts = new Map<string, ParsedScript>();
+  const commandOptions: CommandOptions = {
+    dependencies: options.dependencies || [],
+    ignoredCommands: new Set(options.ignoreCommands),
+  };
+  // Runners that run the script the same way have the same issues, e.g. aube and pnpm
+  const issuesByBehavior = new Map<string, ReadonlyMap<string, RunnerIssue>>();
 
   return new Map(
     runners.map((runner) => {
       const traits = runnerTraits(runner, options.shellEmulator || false);
-      const analyzer = new ScriptAnalyzer(script.length, options, traits, parsedScripts);
+      const issues = mapGetOrInsertComputed(issuesByBehavior, runnerBehavior(traits), () => {
+        const analyzer = new ScriptAnalyzer(script.length, commandOptions, traits, parsedScripts);
 
-      analyzer.analyzeSource({
-        convertsSlashes: traits.convertsSlashes || false,
-        covered: new Set(),
-        crossEnv: false,
-        fixExclusions: [],
-        fixedRange: undefined,
-        offset: 0,
-        portable: traits.portableShell || false,
-        shell: 'native',
-        source: script,
+        analyzer.analyzeSource({
+          convertsSlashes: traits.convertsSlashes || false,
+          covered: new Set(),
+          crossEnv: false,
+          fixExclusions: [],
+          fixedRange: undefined,
+          offset: 0,
+          portable: traits.portableShell || false,
+          shell: 'native',
+          source: script,
+        });
+
+        return analyzer.issues;
       });
 
-      return [runner, analyzer.issues];
+      return [runner, issues];
     }),
   );
 };
