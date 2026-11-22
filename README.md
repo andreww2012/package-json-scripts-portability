@@ -223,6 +223,41 @@ The types `AnalyzeScriptOptions`, `Platform`, `Runner`, `ScriptEdit`, `ScriptFix
 - `node --run` and upm don't run `pre` and `post` scripts, which isn't checked.
 - Whether the package is private isn't known, so its install scripts are runner-agnostic, unless you tell otherwise.
 
+## Contributors
+
+<!-- eslint-disable markdown-preferences/padding-line-between-blocks, markdown/require-alt-text -- The list below is generated -->
+<!-- cspell:disable -->
+
+<!-- ALL-CONTRIBUTORS-LIST:START - Do not remove or modify this section -->
+<!-- prettier-ignore-start -->
+<!-- markdownlint-disable -->
+<table>
+  <tbody>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/andreww2012"><img src="https://avatars.githubusercontent.com/u/6554045?v=4&size=70" width="70px" height="70px" alt="Andrew Kazakov"/><br /><sub><b>Andrew Kazakov</b></sub></a><br /><a href="https://github.com/andreww2012/package-json-scripts-portability/commits?author=andreww2012" title="Code">💻</a> <a href="https://github.com/andreww2012/package-json-scripts-portability/issues?q=author%3Aandreww2012" title="Bug reports">🐛</a> <a href="https://github.com/andreww2012/package-json-scripts-portability/commits?author=andreww2012" title="Documentation">📖</a> <a href="#ideas-andreww2012" title="Ideas, Planning, & Feedback">🤔</a> <a href="#maintenance-andreww2012" title="Maintenance">🚧</a> <a href="#research-andreww2012" title="Research">🔬</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/michaelfaith"><img src="https://avatars.githubusercontent.com/u/8071845?v=4&size=70" width="70px" height="70px" alt="michael faith"/><br /><sub><b>michael faith</b></sub></a><br /><a href="#ideas-michaelfaith" title="Ideas, Planning, & Feedback">🤔</a></td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr>
+      <td align="center" size="13px" colspan="7">
+        <img src="https://raw.githubusercontent.com/all-contributors/all-contributors-cli/1b8533af435da9854653492b1327a23a4dbd0a10/assets/logo-small.svg">
+          <a href="https://all-contributors.js.org/docs/en/bot/usage">Add your contributions</a>
+        </img>
+      </td>
+    </tr>
+  </tfoot>
+</table>
+
+<!-- markdownlint-restore -->
+<!-- prettier-ignore-end -->
+
+<!-- ALL-CONTRIBUTORS-LIST:END -->
+
+<!-- eslint-enable markdown-preferences/padding-line-between-blocks, markdown/require-alt-text -- End of the generated list -->
+
+<!-- cspell:enable -->
+
 ## License
 
 [MIT](./LICENSE.md)
