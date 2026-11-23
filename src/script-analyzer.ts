@@ -247,6 +247,7 @@ class ScriptAnalyzer {
   readonly #commands: CommandChecker;
   /** How many scripts the analyzed source is nested in, e.g. 1 in `sh -c "..."` */
   #depth = 0;
+  readonly #ignoredCommands: ReadonlySet<string>;
   readonly #lineBreaks: LineBreakChecker;
 
   /**
@@ -275,6 +276,7 @@ class ScriptAnalyzer {
     parsedScripts: Map<string, ParsedScript>,
   ) {
     this.#parsedScripts = parsedScripts;
+    this.#ignoredCommands = commandOptions.ignoredCommands;
     this.#reporter = new Reporter(length);
     this.#words = new WordChecker(
       this.#reporter,
@@ -663,9 +665,18 @@ class ScriptAnalyzer {
           isSubshellSafe
             ? {
                 description: 'Replace `{ ... }` with `( ... )`.',
+                // Bash reads `((` as an arithmetic command, e.g. in `({ a; })`
                 edits: [
-                  {end: node.pos + 1, pos: node.pos, text: '('},
-                  {end: node.end, pos: node.end - 1, text: ')'},
+                  {
+                    end: node.pos + 1,
+                    pos: node.pos,
+                    text: context.source[node.pos - 1] === '(' ? ' (' : '(',
+                  },
+                  {
+                    end: node.end,
+                    pos: node.end - 1,
+                    text: context.source[node.end] === ')' ? ') ' : ')',
+                  },
                 ],
               }
             : undefined,
@@ -962,9 +973,11 @@ class ScriptAnalyzer {
       );
     const joinedIssues = this.#swapJoinedScriptIssues(enclosingJoinedIssues);
     // Shells and `find` have to be replaced on Windows anyway (e.g. with a Node.js script), so how
-    // their arguments are quoted doesn't matter there
+    // their arguments are quoted doesn't matter there, unless they're ignored, i.e. available
     const argumentContext =
-      invocation?.name != null && (SHELLS.includes(invocation.name) || invocation.name === 'find')
+      invocation?.name != null &&
+      (SHELLS.includes(invocation.name) || invocation.name === 'find') &&
+      !this.#ignoredCommands.has(invocation.name)
         ? withCovered(context, WINDOWS_PLATFORMS)
         : context;
     const crossEnv = invocation?.crossEnv && {

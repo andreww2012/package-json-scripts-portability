@@ -47,6 +47,12 @@ const UNSPLIT_PART_TYPES: ReadonlySet<WordPart['type']> = new Set([
 ]);
 const QUOTES_OR_BACKSLASH = /["'\\]/;
 
+/**
+ * Checks whether a file that `.` runs is a dotfile without a slash, e.g. `.env`, which shells look
+ * for in `PATH`, but where it's unlikely to be, unlike e.g. conda's `activate`
+ */
+export const isDotfileName = (file: string) => file.startsWith('.') && !file.includes('/');
+
 /** Creates a fix that replaces a piece of the script */
 export const replacement = (node: Range, original: string, text: string): ScriptFix => ({
   description: describeReplacement(original, text),
@@ -221,6 +227,8 @@ export const commandFix = (
         paths.length === 0 ||
         paths.some((word) => staticValue(word)?.startsWith('-') && word.text !== '--') ||
         globs.some((word) => !isPlainWord(word, GLOB_PART_TYPES)) ||
+        // `rimraf` matches `**` recursively, unlike `sh`, which reads it as `*`
+        globs.some((word) => word.text.includes('**')) ||
         // With `--glob`, the other paths are patterns too, e.g. `dist [old]`
         (globs.length > 0 &&
           paths.some((word) => !globs.includes(word) && GLOB_SYNTAX.test(staticValue(word) ?? '*')))
@@ -250,12 +258,12 @@ export const commandFix = (
         return undefined;
       }
 
-      // dash only looks for files without a slash in `PATH`
+      // dash only looks for files without a slash in `PATH`, and macOS' `sh` looks there first
       const range = {end: first.end, pos: nameWord.pos};
       return replacement(
         range,
         source.slice(range.pos, range.end),
-        `. ${file.includes('/') ? '' : './'}${first.text}`,
+        `. ${isDotfileName(file) ? './' : ''}${first.text}`,
       );
     }
 
@@ -295,14 +303,17 @@ export const pathCommandFix = (
  * Gets a fix that replaces the backslashes of a Windows path with slashes.
  * @param word The word with the path, e.g. `--config=configs\app.json`
  * @param original The word's text as the script has it
+ * @param shouldQuote Whether to also quote the path, e.g. `src\**\*.js`, which would become a
+ * recursive glob that `sh` doesn't support
  * @returns The fix, which only replaces the path: the text before it may have placeholders
  */
-export const backslashPathFix = (word: Word, original: string): ScriptFix => {
+export const backslashPathFix = (word: Word, original: string, shouldQuote: boolean): ScriptFix => {
   const start = word.text.lastIndexOf('=') + 1;
   const path = toForwardSlashes(word.text.slice(start));
+  const text = shouldQuote ? `"${path}"` : path;
   return {
-    description: describeReplacement(original, `${original.slice(0, start)}${path}`),
-    edits: [{end: word.end, pos: word.pos + start, text: path}],
+    description: describeReplacement(original, `${original.slice(0, start)}${text}`),
+    edits: [{end: word.end, pos: word.pos + start, text}],
   };
 };
 
@@ -334,6 +345,13 @@ export const braceExpansionFix = (word: Word, part: BraceExpansionPart) => {
 const hasAlternatives = ({command}: Statement) =>
   command.type === 'AndOr' && command.operators.includes('||');
 
+/** Checks whether a statement is a lone `\` at the end of the script, which can't follow `&&` */
+const isTrailingBackslash = ({command}: Statement) =>
+  command.type === 'Command' &&
+  command.prefix.length === 0 &&
+  command.name?.text === '\\' &&
+  command.suffix.length === 0;
+
 /**
  * Checks whether joining two statements with `&&` keeps the logic the same, apart from stopping
  * after a failure.
@@ -343,7 +361,10 @@ const hasAlternatives = ({command}: Statement) =>
  * `c` when `a` fails, or for `a || b; c`, which cmd.exe would read as `a || (b && c)`
  */
 const canChain = (statement: Statement, next: Statement) =>
-  !next.background && !hasAlternatives(statement) && !hasAlternatives(next);
+  !next.background &&
+  !hasAlternatives(statement) &&
+  !hasAlternatives(next) &&
+  !isTrailingBackslash(next);
 
 /**
  * Gets a fix for a line break that separates statements.

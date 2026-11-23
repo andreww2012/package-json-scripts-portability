@@ -39,7 +39,7 @@ import {
 } from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {TraitsReader} from './runners.ts';
-import {setHas, substringAfterLast} from './utils.ts';
+import {setHas, substringAfterLast, toForwardSlashes} from './utils.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
   GLOB_PART_TYPES,
@@ -1072,7 +1072,15 @@ export class WordChecker {
         // cmd.exe treats `/` as an option prefix in command names and its own commands
         options.commandName || options.redirectTarget || !isTool(options.command)
           ? undefined
-          : backslashPathFix(word, originalText(context, word)),
+          : backslashPathFix(
+              word,
+              originalText(context, word),
+              // The fixed word would be an unquoted `**/` glob, which is reported too
+              path === text &&
+                RECURSIVE_GLOB.test(toForwardSlashes(path)) &&
+                !context.portable &&
+                !context.bashOptions?.has('globstar'),
+            ),
       );
     }
 

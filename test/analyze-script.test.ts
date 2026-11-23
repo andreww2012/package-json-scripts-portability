@@ -55,6 +55,8 @@ const yarnClassic: AnalyzeScriptOptions = {runner: 'yarn-classic'};
 
 const QUOTE = 'Quote it with escaped double quotes.';
 const CROSS_ENV = 'Prefix the command with `cross-env`.';
+const exitZeroDescription = (command: string) =>
+  `Replace \`${command}\` with \`exit 0\`, which Bash rejects if the script gets extra arguments.`;
 
 describe('analyzeScript', () => {
   describe('portable scripts', () => {
@@ -758,6 +760,23 @@ describe('analyzeScript', () => {
           ['unsupportedCommand', 'open', 'linux'],
         ],
       ],
+      // Options continue after `-c`
+      [
+        'sh -c -e "[[ -f x ]]"',
+        [
+          ['unsupportedCommand', 'sh', 'win32'],
+          ['unsupportedSyntax', '[[ -f x ]]', 'linux'],
+        ],
+      ],
+      [
+        'bash -c -o pipefail "a |& b"',
+        [
+          ['unsupportedCommand', 'bash', 'win32'],
+          ['unsupportedSyntax', '|&', 'darwin'],
+        ],
+      ],
+      // But not after the script file
+      ['sh build.sh -c "open x"', [['unsupportedCommand', 'sh', 'win32']]],
       [
         'echo $(sed -i s/a/b/ f)',
         [
@@ -844,6 +863,8 @@ describe('analyzeScript', () => {
         ],
       ],
       ['del dist', [['unsupportedCommand', 'del', 'darwin,linux,win32']]],
+      // GNU coreutils ship `dir`
+      ['dir', [['unsupportedCommand', 'dir', 'darwin,win32']]],
       ['if true; then node x; fi', [['unsupportedSyntax', 'if', 'darwin,linux,win32']]],
       ['echo `date`', [['unsupportedSyntax', '`date`', 'darwin,linux,win32']]],
       ['echo ${A#b}', [['unsupportedSyntax', '${A#b}', 'darwin,linux,win32']]],
@@ -2775,6 +2796,19 @@ describe('analyzeScript', () => {
         ],
         // macOS' `mktemp` supports long options
         ['mktemp --directory', [['unsupportedCommand', 'mktemp', 'win32']]],
+        // And `du` and `df` support some
+        ['du --si .', [['unsupportedCommand', 'du', 'win32']]],
+        [
+          'df --si --libxo=json .', // cspell:disable-line
+          [['unsupportedCommand', 'df', 'win32']],
+        ],
+        [
+          'du --si --summarize .',
+          [
+            ['unsupportedCommand', 'du', 'win32'],
+            ['unsupportedUsage', 'du --si --summarize', 'darwin'],
+          ],
+        ],
       ])('%j', (script, expected) => {
         expect(summarize(script)).toStrictEqual(expected);
       });
@@ -2830,6 +2864,13 @@ describe('analyzeScript', () => {
           ],
         ],
         ['. ./.env && node x', [['unsupportedCommand', '.', 'win32']]],
+        [
+          '. activate',
+          [
+            ['unsupportedCommand', '.', 'win32'],
+            ['unsupportedUsage', '. activate', 'linux'],
+          ],
+        ],
         [
           'echo $((2 ** 10))',
           [
@@ -2989,6 +3030,10 @@ describe('analyzeScript', () => {
           [['unsupportedSyntax', '"%LANG_ISO%.json"', 'darwin,linux']],
         ],
         ['setlocal && node x', [['unsupportedCommand', 'setlocal', 'darwin,linux']]],
+        // It prints a file in cmd.exe, but tells what a command is in POSIX shells
+        ['type a.txt > b.txt', [['inconsistentBehavior', 'type', 'darwin,linux,win32']]],
+        ['TYPE a.txt', [['inconsistentBehavior', 'TYPE', 'darwin,linux,win32']]],
+        ['sh -c "type node"', [['unsupportedCommand', 'sh', 'win32']]],
       ])('%j', (script, expected) => {
         expect(summarize(script)).toStrictEqual(expected);
       });
@@ -3001,6 +3046,7 @@ describe('analyzeScript', () => {
         ['set NODE_ENV=production&& node x', [['unsupportedCommand', 'set', 'darwin,linux,win32']]],
         ['[ a == b ] && node x', [['unsupportedCommand', '[', 'win32']]],
         ['rem node build.js', [['unsupportedCommand', 'rem', 'darwin,linux,win32']]],
+        ['type node', []],
         [
           String.raw`node "scripts\build.js"`,
           [['inconsistentBehavior', String.raw`"scripts\build.js"`, 'darwin,linux']],
@@ -3157,6 +3203,17 @@ describe('analyzeScript', () => {
       ['sh -c "rm x"', ['sh'], [['unsupportedCommand', 'rm', 'win32']]],
       ['./scripts/build.sh', ['./scripts/build.sh'], []],
       ['sed -i x f', ['sed'], []],
+      // cmd.exe still reads the quotes differently
+      [
+        "sh -c 'echo hi && ls'",
+        ['sh', 'ls'],
+        [['inconsistentBehavior', "'echo hi && ls'", 'win32']],
+      ],
+      ["find . -name '*.js'", ['find'], [['inconsistentBehavior', "'*.js'", 'win32']]],
+      // Linux needs the exact name, and macOS too for builtins without executables
+      ['RM -rf dist', ['rm'], [['unsupportedCommand', 'RM', 'linux']]],
+      ['EXPORT A=1', ['export'], [['unsupportedCommand', 'EXPORT', 'darwin,linux']]],
+      ['RM -rf dist', ['rm', 'RM'], []],
     ])('%j with %j', (script, ignoreCommands, expected) => {
       expect(summarize(script, {ignoreCommands})).toStrictEqual(expected);
     });
@@ -3175,6 +3232,22 @@ describe('analyzeScript', () => {
       expect(summarize('del dist', {dependencies: ['del-cli']})).toStrictEqual([
         ['inconsistentBehavior', 'del', 'win32'],
       ]);
+    });
+
+    // Linux only finds the binary by its exact name
+    it.each<[AnalyzeScriptOptions, Summary[]]>([
+      [
+        {},
+        [
+          ['inconsistentBehavior', 'DEL', 'win32'],
+          ['unsupportedCommand', 'DEL', 'linux'],
+        ],
+      ],
+      [yarn, [['unsupportedCommand', 'DEL', 'linux']]],
+    ])("reports del-cli's `del` in the wrong case with %j", (options, expected) => {
+      expect(summarize('DEL dist', {...options, dependencies: ['del-cli']})).toStrictEqual(
+        expected,
+      );
     });
 
     it.each<AnalyzeScriptOptions>([yarn, {runner: 'pnpm', shellEmulator: true}])(
@@ -3250,16 +3323,21 @@ describe('analyzeScript', () => {
         'export CI=1 A="b c" && jest',
         [['export', 'Replace `export ... &&` with `cross-env`.', 'cross-env CI=1 A="b c" jest']],
       ],
-      ['tsc || true', [['true', 'Replace `true` with `exit 0`.', 'tsc || exit 0']]],
-      ['tsc || :', [[':', 'Replace `:` with `exit 0`.', 'tsc || exit 0']]],
+      ['tsc || true', [['true', exitZeroDescription('true'), 'tsc || exit 0']]],
+      ['tsc || :', [[':', exitZeroDescription(':'), 'tsc || exit 0']]],
       ['vitest && false', [['false', 'Replace `false` with `exit 1`.', 'vitest && exit 1']]],
       [
         'concurrently "tsc || true"',
-        [['true', 'Replace `true` with `exit 0`.', 'concurrently "tsc || exit 0"']],
+        [['true', exitZeroDescription('true'), 'concurrently "tsc || exit 0"']],
       ],
       [
         'source .env && tsc',
         [['source', 'Replace `source .env` with `. ./.env`.', '. ./.env && tsc']],
+      ],
+      // The file may be in `PATH`, where macOS' `sh` looks first
+      [
+        'source activate && python x.py',
+        [['source', 'Replace `source activate` with `. activate`.', '. activate && python x.py']],
       ],
       [
         './node_modules/.bin/eslint .',
@@ -3278,6 +3356,29 @@ describe('analyzeScript', () => {
       // The binary's name may run the binary of another package there
       ['cd packages/a && ./node_modules/.bin/tsc', []],
       ['pushd a && ./node_modules/.bin/tsc', []],
+      ['cd packages/app && concurrently "./node_modules/.bin/tsc -w" "node x"', []],
+      ['cd packages/app && npx -c "./node_modules/.bin/tsc"', []],
+      [`cd a && concurrently "npx -c './node_modules/.bin/tsc'"`, []],
+      [
+        `concurrently "npx -c './node_modules/.bin/tsc'" && cd a`,
+        [
+          [
+            './node_modules/.bin/tsc',
+            'Replace `./node_modules/.bin/tsc` with `tsc`.',
+            `concurrently "npx -c 'tsc'" && cd a`,
+          ],
+        ],
+      ],
+      [
+        'pnpm -C dir exec ./node_modules/.bin/tsc',
+        [
+          [
+            './node_modules/.bin/tsc',
+            'Replace `./node_modules/.bin/tsc` with `tsc`.',
+            'pnpm -C dir exec tsc',
+          ],
+        ],
+      ],
       [
         'cd a && ./build.js',
         [['./build.js', 'Run the file with `node`.', 'cd a && node ./build.js']],
@@ -3371,6 +3472,27 @@ describe('analyzeScript', () => {
           ],
         ],
       ],
+      // The fixed path is a `**/` glob, which `sh` doesn't expand recursively
+      [
+        String.raw`tool src\**\*.js`,
+        [
+          [
+            String.raw`src\**\*.js`,
+            String.raw`Replace ${'`'}src\**\*.js${'`'} with ${'`'}"src/**/*.js"${'`'}.`,
+            'tool "src/**/*.js"',
+          ],
+        ],
+      ],
+      [
+        String.raw`tool --files=src\**\*.js`,
+        [
+          [
+            String.raw`--files=src\**\*.js`,
+            String.raw`Replace ${'`'}--files=src\**\*.js${'`'} with ${'`'}--files=src/**/*.js${'`'}.`,
+            'tool --files=src/**/*.js',
+          ],
+        ],
+      ],
 
       // Separators, groups and comments
       [
@@ -3408,6 +3530,11 @@ describe('analyzeScript', () => {
       [
         '{ tsc; vite build; } > log',
         [['{', 'Replace `{ ... }` with `( ... )`.', '( tsc; vite build; ) > log']],
+      ],
+      // Bash reads `((` as an arithmetic command
+      [
+        '({ tsc; vite build; })',
+        [['{', 'Replace `{ ... }` with `( ... )`.', '( ( tsc; vite build; ) )']],
       ],
       ['tsc # build', [['# build', 'Remove the comment.', 'tsc']]],
       ['# Build\ntsc', [['# Build', 'Remove the comment.', 'tsc']]],
@@ -3507,7 +3634,7 @@ describe('analyzeScript', () => {
       ],
 
       // Usage
-      ['. env.sh', [['. env.sh', 'Replace `env.sh` with `./env.sh`.', '. ./env.sh']]],
+      ['. .env', [['. .env', 'Replace `.env` with `./.env`.', '. ./.env']]],
       [
         '[ "$CI" == true ] && npm publish',
         [['[ "$CI" ==', 'Replace `==` with `=`.', '[ "$CI" = true ] && npm publish']],
@@ -3524,6 +3651,16 @@ describe('analyzeScript', () => {
       expect(summarizeFixes('del dist', {dependencies: ['del-cli']})).toStrictEqual([
         ['del', 'Replace `del` with `del-cli`.', 'del-cli dist'],
       ]);
+      expect(summarizeFixes('DEL dist', {dependencies: ['del-cli']})).toStrictEqual([
+        ['DEL', 'Replace `DEL` with `del-cli`.', 'del-cli dist'],
+        ['DEL', 'Replace `DEL` with `del-cli`.', 'del-cli dist'],
+      ]);
+    });
+
+    it('puts the name of an ignored command in lower case', () => {
+      expect(summarizeFixes('RM -rf dist', {ignoreCommands: ['rm']})).toStrictEqual([
+        ['RM', 'Replace `RM` with `rm`.', 'rm -rf dist'],
+      ]);
     });
 
     it.each([
@@ -3531,6 +3668,8 @@ describe('analyzeScript', () => {
       'rm -rfv dist',
       'rm -rf',
       'rm -rf "$DIR"/*',
+      // `rimraf` matches `**` recursively, unlike `sh`
+      'rm -rf packages/**/dist',
       'env -i jest',
       'env',
       // The variables would also apply to `vite build`
@@ -3556,6 +3695,11 @@ describe('analyzeScript', () => {
       // `&&` would run `echo` when `tsc` fails
       'tsc; vite build || echo failed',
       'tsc; vite build &',
+      // `&&` can't precede the `\` at the end of the script
+      'tsc; \\',
+      'tsc\n\\',
+      // The file may be in `PATH`, where macOS' `sh` looks first
+      '. env.sh',
       './bin/cli',
       // cmd.exe's own commands treat `/` as an option prefix
       String.raw`cd .\src\lib`,

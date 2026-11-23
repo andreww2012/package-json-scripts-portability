@@ -1,4 +1,6 @@
+// cspell:ignore libxo
 import {NO_LONG_OPTIONS_ON_MACOS} from './commands.ts';
+import {isDotfileName} from './fixes.ts';
 import {
   CROSS_ENV_SUGGESTION,
   NODE_SCRIPT_SUGGESTION,
@@ -90,6 +92,11 @@ const GNU_SED_BASIC_ESCAPE = /(?<!\\)(?:\\\\)*(\\[+?])/;
 const GNU_XARGS_OPTION = /^(?:-[0prtx]*[adil]|--(?:arg-file|delimiter|max-lines|replace)\b)/;
 
 const LONG_OPTION = /^--[^-]/;
+/** Long options that some BSD utilities on macOS do support, by utility */
+const BSD_LONG_OPTIONS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['df', ['--libxo', '--si']],
+  ['du', ['--libxo', '--si']],
+]);
 /** Any option, e.g. `-p` */
 const POSIX_OPTION = /^-./;
 /** A cmd.exe option, e.g. `/s` */
@@ -192,7 +199,11 @@ export const checkCommandUsage = (
   };
 
   if (NO_LONG_OPTIONS_ON_MACOS.has(name)) {
-    const index = optionIndex((value) => LONG_OPTION.test(value));
+    const index = optionIndex(
+      (value) =>
+        LONG_OPTION.test(value) &&
+        !BSD_LONG_OPTIONS.get(name)?.includes(substringBefore(value, '=')),
+    );
     if (index !== -1) {
       report(index, MACOS_PLATFORMS, {
         reason: `BSD \`${name}\` doesn't support GNU-style long options`,
@@ -217,7 +228,8 @@ export const checkCommandUsage = (
             reason: 'dash only looks for the file in `PATH`, not in the current directory',
             suggestion: `Use \`. ./${truncate(file)}\` instead.`,
           },
-          replaceArgument(0, `./${textOf(0)}`),
+          // macOS' `sh` looks for it in `PATH` first, where it might be, e.g. conda's `activate`
+          isDotfileName(file) ? replaceArgument(0, `./${textOf(0)}`) : undefined,
         );
       }
       break;

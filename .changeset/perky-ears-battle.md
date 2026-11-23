@@ -40,3 +40,7 @@ Fixed several wrong fixes and reports:
 - Started reporting shell builtins like `export` and `set`, Bash variables like `$UID`, and brace expansions in Yarn's shell on all platforms
 - Started reporting `&` in scripts with other macOS and Linux issues, `\\` outside `cross-env`, braces with globs for OS commands, and cmd.exe's `if a==b` comparisons
 - Made `||` fallbacks that don't cover all platforms still report the platforms where all of them fail, like Windows for `sed -i x f || sed -i '' x f`
+- Stopped fixes from turning `({ a; })` into `(( a; ))`, from using `rimraf --glob` with `**` globs, from adding `./` to files that `.` may find in `PATH`, like `. activate`, from shortening binary paths in scripts that run after `cd`, like in `cd a && concurrently "./node_modules/.bin/tsc"`, and from adding `&&` before a `\` at the end of the script
+- Started quoting the `**/` globs that the fix of backslash paths creates, like for `src\**\*.js`, and made the `exit 0` fix for `true` and `:` say that Bash rejects it if the script gets extra arguments
+- Started reporting cmd.exe's `type`, the scripts of `sh -c -e "..."`, single quotes in the arguments of ignored shells and `find` on Windows, and del-cli's `del` and ignored commands in the wrong case on Linux, like `DEL` and `RM`
+- Stopped reporting `dir` on Linux in Yarn's shell, and `du --si` and `df --si` on macOS

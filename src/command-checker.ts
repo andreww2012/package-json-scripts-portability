@@ -24,7 +24,12 @@ import {
   pathCommandFix,
   replacement,
 } from './fixes.ts';
-import {NODE_SCRIPT_SUGGESTION, SHELL_SCRIPT_SUGGESTION, truncate} from './messages.ts';
+import {
+  NODE_SCRIPT_SUGGESTION,
+  SHELL_SCRIPT_SUGGESTION,
+  describeReplacement,
+  truncate,
+} from './messages.ts';
 import {
   LINUX_PLATFORMS,
   PLATFORMS,
@@ -109,6 +114,28 @@ const isWrongCase = (name: string) => {
 };
 
 /**
+ * Gets the platforms where a command in the wrong case is missing.
+ * @param lowerCaseName The command's name in lower case
+ * @param platforms Where the command in lower case is missing
+ * @param context Where the command is
+ * @returns The platforms
+ */
+const wrongCasePlatforms = (
+  lowerCaseName: string,
+  platforms: readonly Platform[],
+  context: Context,
+) =>
+  PLATFORMS.filter(
+    (platform) =>
+      platform === 'linux' ||
+      platforms.includes(platform) ||
+      (platform === 'darwin' && EXACT_NAME_BUILTINS.has(lowerCaseName)) ||
+      // Yarn's shell only knows its builtins by their exact names, and Windows has no executables
+      // for them, e.g. for `cd`
+      (platform === 'win32' && context.portable && PORTABLE_SHELL_BUILTINS.has(lowerCaseName)),
+  );
+
+/**
  * Gets the text of a `cross-env` argument to tell whether it sets a variable, e.g. `B=$A`.
  * @param word The argument
  * @param value Its static value
@@ -159,7 +186,7 @@ const SHELL_OPTION = /^[+-]./;
 const SHELL_VALUE_OPTION = /^(?:[+-][a-z]*o|--init-file|--rcfile)$/i;
 
 /**
- * Finds the script of a shell's `-c` option, e.g. in `sh -c "..."`.
+ * Finds the script of a shell's `-c` option, e.g. in `sh -c "..."` or `sh -c -e "..."`.
  * The shell's options end at the script file, whose arguments are its own, e.g. `-c` in
  * `sh build.sh -c x`.
  * @param values The static values of the shell's arguments
@@ -167,17 +194,16 @@ const SHELL_VALUE_OPTION = /^(?:[+-][a-z]*o|--init-file|--rcfile)$/i;
  */
 const findCommandString = (values: readonly (string | undefined)[]) => {
   let index = 0;
+  let hasCommandOption = false;
 
   while (index < values.length) {
     const value = values[index];
     if (value == null || !SHELL_OPTION.test(value)) {
-      break;
+      return hasCommandOption ? index : -1;
     }
 
+    hasCommandOption ||= isShortOptionCluster(value, 'c');
     index += SHELL_VALUE_OPTION.test(value) ? 2 : 1;
-    if (isShortOptionCluster(value, 'c')) {
-      return index;
-    }
   }
 
   return -1;
@@ -291,6 +317,8 @@ export class CommandChecker {
   readonly #analyzeNestedWords: NestedWordsAnalyzer;
   /** Sources in which a command changed the directory, e.g. with `cd`, by the walk so far */
   readonly #directoryChangeSources = new Set<string>();
+  /** Whether a script that the walked one is nested in changed the directory before it */
+  #isEnclosingDirectoryChanged = false;
   readonly #options: CommandOptions;
   /** Fixes that depend on where a command is, by the command's name, e.g. `exit 0` for `true` */
   readonly #positionalFixes = new Map<Word, ScriptFix>();
@@ -333,10 +361,16 @@ export class CommandChecker {
     ) {
       const status = EXIT_STATUSES.get(staticValue(final.name) || '');
       if (status != null) {
-        this.#positionalFixes.set(
-          final.name,
-          replacement(final.name, final.name.text, `exit ${status}`),
-        );
+        const text = `exit ${status}`;
+        this.#positionalFixes.set(final.name, {
+          // Package managers append extra arguments to the script, e.g. `--fix` in
+          // `npm run x -- --fix`. `true` ignores them, and `exit 1` fails either way
+          description:
+            status === '0'
+              ? `Replace \`${truncate(final.name.text)}\` with \`${text}\`, which Bash rejects if the script gets extra arguments.`
+              : describeReplacement(final.name.text, text),
+          edits: [{end: final.name.end, pos: final.name.pos, text}],
+        });
       }
     }
 
@@ -397,22 +431,55 @@ export class CommandChecker {
     context: Context,
     usageIssues: readonly UsageIssue[],
   ) {
-    if (name === 'del' && this.#options.dependencies.includes('del-cli')) {
-      // Yarn's shell can't run cmd.exe's builtins, so it runs del-cli's binary everywhere
-      return context.portable
-        ? []
-        : this.#reporter.report(
-            context,
-            nameWord,
-            'inconsistentBehavior',
-            {
-              reason: "cmd.exe's builtin `del` takes precedence over del-cli's `del` binary",
-              suggestion: 'Use `del-cli` instead.',
-              syntax: '`del`',
-            },
-            WINDOWS_PLATFORMS,
-            replacement(nameWord, nameWord.text, 'del-cli'),
-          );
+    const lowerCaseName = name.toLowerCase();
+
+    if (lowerCaseName === 'del' && this.#options.dependencies.includes('del-cli')) {
+      const suggestion = 'Use `del-cli` instead.';
+      const fix = replacement(nameWord, nameWord.text, 'del-cli');
+      return [
+        // Yarn's shell can't run cmd.exe's builtins, so it runs del-cli's binary everywhere
+        ...(context.portable
+          ? []
+          : this.#reporter.report(
+              context,
+              nameWord,
+              'inconsistentBehavior',
+              {
+                reason: "cmd.exe's builtin `del` takes precedence over del-cli's `del` binary",
+                suggestion,
+                syntax: '`del`',
+              },
+              WINDOWS_PLATFORMS,
+              fix,
+            )),
+        // Only Linux finds the binary by its exact name
+        ...(name === lowerCaseName
+          ? []
+          : this.#reporter.report(
+              context,
+              nameWord,
+              'unsupportedCommand',
+              {command: name, suggestion},
+              LINUX_PLATFORMS,
+              fix,
+            )),
+      ];
+    }
+
+    // It's not known which of them a script for the runner's shell means, unlike in `sh -c "..."`
+    if (lowerCaseName === 'type' && context.shell === 'native' && !context.portable) {
+      return this.#reporter.report(
+        context,
+        nameWord,
+        'inconsistentBehavior',
+        {
+          reason:
+            "cmd.exe's `type` prints a file, and the `type` of POSIX shells tells what a command is",
+          suggestion: NODE_SCRIPT_SUGGESTION,
+          syntax: '`type`',
+        },
+        PLATFORMS,
+      );
     }
 
     if (context.portable && PORTABLE_SHELL_BUILTINS.has(name)) {
@@ -436,7 +503,6 @@ export class CommandChecker {
       );
     }
 
-    const lowerCaseName = name.toLowerCase();
     const isNameWrongCase = isWrongCase(name);
     const info = COMMANDS.get(isNameWrongCase ? lowerCaseName : name);
 
@@ -447,25 +513,16 @@ export class CommandChecker {
     let platforms = info?.platforms || [];
 
     if (isNameWrongCase) {
-      platforms = PLATFORMS.filter(
-        (platform) =>
-          // The usage report tells more, e.g. that `/T` in `TIMEOUT /T 5` is an option of cmd.exe
-          usageIssues.every((issue) => !issue.platforms.includes(platform)) &&
-          (platform === 'linux' ||
-            platforms.includes(platform) ||
-            (platform === 'darwin' && EXACT_NAME_BUILTINS.has(lowerCaseName)) ||
-            // Yarn's shell only knows its builtins by their exact names, and Windows has no
-            // executables for them, e.g. for `cd`
-            (platform === 'win32' &&
-              context.portable &&
-              PORTABLE_SHELL_BUILTINS.has(lowerCaseName))),
+      platforms = wrongCasePlatforms(lowerCaseName, platforms, context).filter(
+        // The usage report tells more, e.g. that `/T` in `TIMEOUT /T 5` is an option of cmd.exe
+        (platform) => usageIssues.every((issue) => !issue.platforms.includes(platform)),
       );
     } else if (info?.bashBuiltin && context.shell === 'bash') {
       platforms = arrayDifference(platforms, LINUX_PLATFORMS);
     }
 
     if (context.portable && CMD_BUILTINS.has(lowerCaseName)) {
-      platforms = PLATFORMS;
+      platforms = arrayIntersection(PLATFORMS, [...platforms, ...WINDOWS_PLATFORMS]);
     }
 
     return this.#reporter.report(
@@ -542,6 +599,24 @@ export class CommandChecker {
       return result;
     }
 
+    // It's ignored in lower case, which some platforms need, e.g. `rm` for `RM`
+    const lowerCaseName = name.toLowerCase();
+    if (this.#options.ignoredCommands.has(lowerCaseName) && isWrongCase(name)) {
+      const firstIssue = this.#reporter.issues.length;
+      const covered = this.#reporter.report(
+        context,
+        nameWord,
+        'unsupportedCommand',
+        {command: name, suggestion: `Use \`${lowerCaseName}\` in lower case instead.`},
+        wrongCasePlatforms(lowerCaseName, [], context),
+        // `echo` is a builtin of `sh`, but an executable on macOS
+        lowerCaseName === 'echo' ? undefined : replacement(nameWord, nameWord.text, lowerCaseName),
+      );
+      this.#reporter.markFailures(firstIssue);
+      follow(this.#checkWrapped(name, argumentWords, values, withCovered(context, covered), depth));
+      return result;
+    }
+
     const firstIssue = this.#reporter.issues.length;
     const usageIssues = findUsageIssues(name, argumentWords, values, context);
     const covered: Platform[] = [];
@@ -593,7 +668,11 @@ export class CommandChecker {
                 'cmd.exe treats `/` as an option prefix; run files with `node`, and binaries by their name instead.',
               syntax: `Running a command by its path (\`${truncate(nameWord.text)}\`)`,
             },
-            pathCommandFix(name, nameWord, this.#directoryChangeSources.has(context.source)),
+            pathCommandFix(
+              name,
+              nameWord,
+              this.#isEnclosingDirectoryChanged || this.#directoryChangeSources.has(context.source),
+            ),
           ),
         );
       }
@@ -609,6 +688,20 @@ export class CommandChecker {
     // The commands that it runs aren't reported on the platforms where it's reported already
     follow(this.#checkWrapped(name, argumentWords, values, withCovered(context, covered), depth));
     return result;
+  }
+
+  /**
+   * Analyzes words that a command runs as a script, e.g. in `sh -c "..."`.
+   * @param words The words
+   * @param context Where the command is
+   * @param options How the script runs
+   */
+  #analyzeNested(words: readonly Word[], context: Context, options: NestedWordsOptions) {
+    const wasDirectoryChanged = this.#isEnclosingDirectoryChanged;
+    // The script runs in the directory that the enclosing one changed to, e.g. after `cd a &&`
+    this.#isEnclosingDirectoryChanged ||= this.#directoryChangeSources.has(context.source);
+    this.#analyzeNestedWords(words, context, options);
+    this.#isEnclosingDirectoryChanged = wasDirectoryChanged;
   }
 
   #reportUsage(
@@ -669,7 +762,7 @@ export class CommandChecker {
     ) => {
       const word = argumentWords[index];
       if (word && depth < MAX_DEPTH) {
-        this.#analyzeNestedWords([word], context, {
+        this.#analyzeNested([word], context, {
           bashOptions,
           crossEnv: false,
           maskScriptGlobs: name === 'concurrently',
@@ -681,7 +774,7 @@ export class CommandChecker {
     // Joins the arguments from an index on into a single script, e.g. in `cross-env-shell rm $DIR`
     const nestedShellLine = (index: number, isCrossEnv = false) => {
       if (index !== -1 && depth < MAX_DEPTH) {
-        this.#analyzeNestedWords(argumentWords.slice(index), context, {
+        this.#analyzeNested(argumentWords.slice(index), context, {
           crossEnv: isCrossEnv && 'script',
           shell: 'native',
         });
