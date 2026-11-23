@@ -50,6 +50,38 @@ const isStatic = (parts: readonly (DoubleQuotedChild | WordPart)[]): boolean =>
   );
 
 /**
+ * Gets the text that a command receives for a word, e.g. a script for `sh -c`.
+ * The outer shell's expansions are replaced by placeholders of the same length.
+ * Their results aren't known, and they're reported for the outer script already.
+ * @param parts The word's parts
+ * @param shouldKeepExpansions Whether to keep the expansions' text instead, e.g. for reports
+ * @returns The text
+ */
+export const nestedSource = (
+  parts: readonly (DoubleQuotedChild | WordPart)[],
+  shouldKeepExpansions = false,
+): string =>
+  parts
+    .map((part) => {
+      switch (part.type) {
+        case 'AnsiCQuoted':
+        case 'Glob':
+        case 'Literal':
+        case 'SingleQuoted': {
+          return part.value;
+        }
+        case 'DoubleQuoted':
+        case 'LocaleString': {
+          return nestedSource(part.parts, shouldKeepExpansions);
+        }
+        default: {
+          return shouldKeepExpansions ? part.text : PLACEHOLDER.repeat(part.text.length);
+        }
+      }
+    })
+    .join('');
+
+/**
  * Gets the value of a word, if it doesn't depend on expansions.
  * @param word A word from the parsed script
  * @returns The value, or `undefined` if it's dynamic

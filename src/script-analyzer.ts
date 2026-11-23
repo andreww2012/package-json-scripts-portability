@@ -4,7 +4,6 @@ import {
   type BraceGroup,
   type Command,
   type CompoundList,
-  type DoubleQuotedChild,
   type ParsedScript,
   type Pipeline,
   type PipelineNode,
@@ -13,7 +12,6 @@ import {
   type Subshell,
   type TestExpression,
   type Word,
-  type WordPart,
   parse,
 } from 'unbash';
 import type {AnalyzeScriptOptions} from './analyze-script.ts';
@@ -54,7 +52,13 @@ import {
   substringBefore,
 } from './utils.ts';
 import {CMD_STATEMENTS, WordChecker} from './word-checker.ts';
-import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, PLACEHOLDER, WHITESPACE, staticValue} from './words.ts';
+import {
+  DOUBLE_QUOTED_SPECIAL_CHARACTERS,
+  PLACEHOLDER,
+  WHITESPACE,
+  nestedSource,
+  staticValue,
+} from './words.ts';
 
 /** `#` comments after a word boundary, which end at the line feed, not at a carriage return */
 const COMMENTS = /(?:^|[\s&;|])(#[^\n]*)/g;
@@ -62,12 +66,18 @@ const COMMENTS = /(?:^|[\s&;|])(#[^\n]*)/g;
 const SCRIPT_GLOBS = /((?:bun|npm|pnpm|yarn) run|node --run|deno task) (\S*\*\S*)/g;
 /** `shopt -s globstar`, which makes `**` recursive in the following commands */
 const SHOPT_GLOBSTAR = /\bshopt\s+-s\s+(?:\w+\s+)*globstar\b/;
-/** The rest of a script that only closes subshells */ // cspell:disable-line
-const CLOSING_PARENTHESES = /^[\s)]*$/;
+// cspell:disable-next-line
+/** The rest of a script that only closes subshells, apart from `;` and comments */
+const CLOSING_PARENTHESES = /^(?:[\s);]|#[^\n]*(?:\n|$))*$/;
 const ONE_LINE_SUGGESTION = 'Put the commands on one line instead.';
-const WINDOWS_BATCH_SYNTAX =
-  /\bif\s+(?:\/i\s+)?(?:not\s+)?(?:defined|errorlevel|exist)\b|\bfor\s+(?:\/[a-z]\s+)*%%?[a-z]\b/gi;
+/** cmd.exe's `if` and `for` statements, e.g. `if exist dist` or `if "%CI%"=="true"` */
+const WINDOWS_BATCH_SYNTAX: readonly RegExp[] = [
+  /\bif\s+(?:\/i\s+)?(?:not\s+)?(?:defined|errorlevel|exist)\b/gi,
+  /\bif\s+(?:\/i\s+)?(?:not\s+)?(?:"[^\n"]*"|[^\s"]\S*?)(?:\s*==\s*|\s+(?:equ|geq|gtr|leq|lss|neq)\s+)(?:"[^\n"]*"|[^\s"]\S*)/gi,
+  /\bfor\s+(?:\/[a-z]\s+)*%%?[a-z]\b/gi,
+];
 const SINGLE_QUOTE = /'/;
+const DOUBLE_QUOTE = /"/;
 const ANY_CHARACTER = /[\s\S]/;
 const NO_PLATFORMS: ReadonlySet<Platform> = new Set();
 
@@ -118,38 +128,6 @@ const doesChangeShellState = (node: AndOr | PipelineNode): boolean => {
 };
 
 /**
- * Gets the text that a command receives for a word, e.g. a script for `sh -c`.
- * The outer shell's expansions are replaced by placeholders of the same length.
- * Their results aren't known, and they're reported for the outer script already.
- * @param parts The word's parts
- * @param shouldKeepExpansions Whether to keep the expansions' text instead, e.g. for reports
- * @returns The text
- */
-const nestedSource = (
-  parts: readonly (DoubleQuotedChild | WordPart)[],
-  shouldKeepExpansions = false,
-): string =>
-  parts
-    .map((part) => {
-      switch (part.type) {
-        case 'AnsiCQuoted':
-        case 'Glob':
-        case 'Literal':
-        case 'SingleQuoted': {
-          return part.value;
-        }
-        case 'DoubleQuoted':
-        case 'LocaleString': {
-          return nestedSource(part.parts, shouldKeepExpansions);
-        }
-        default: {
-          return shouldKeepExpansions ? part.text : PLACEHOLDER.repeat(part.text.length);
-        }
-      }
-    })
-    .join('');
-
-/**
  * Gets the original text of a script nested in a piece with placeholders, when it has a source of
  * its own, e.g. in backticks, which is the piece's text without some backslashes.
  * @param source The nested script's source
@@ -178,37 +156,91 @@ const originalNestedSource = (source: string, text: string, original: string) =>
 const issueDataKey = (issue: RunnerIssue) => JSON.stringify([issue.messageId, issue.data]);
 
 /**
- * Looks for a run of `||` alternatives that each break on some platform, but together work on all
- * platforms, e.g. `open x || xdg-open x || start x`.
+ * Looks for a run of `||` alternatives that each fail on some platform, e.g.
+ * `open x || xdg-open x || start x`.
  * @param node The list that the alternatives are in
  * @param platformsOf Gets the platforms on which a command of the list fails
  * @param first Index of the run's first command
- * @returns Index of the last command that was looked at, and whether the commands up to it are
- * such a run
+ * @returns Index of the run's last command, which is `first` if there is no run, and the platforms
+ * on which all of its commands fail, which are none if they work together on all platforms
  */
-const findFallbackEnd = (
+const findFallbackRun = (
   node: AndOr,
   platformsOf: (index: number) => ReadonlySet<Platform>,
   first: number,
 ) => {
-  let unsupported = platformsOf(first);
+  let common = platformsOf(first);
   let last = first;
 
-  while (unsupported.size > 0 && last + 1 < node.commands.length && node.operators[last] === '||') {
-    last++;
-    const platforms = platformsOf(last);
+  // Once they work together on all platforms, later alternatives aren't fallbacks, e.g. `true`
+  // in `rm ... || rmdir /s ... || true`
+  while (common.size > 0 && last + 1 < node.commands.length && node.operators[last] === '||') {
+    const platforms = platformsOf(last + 1);
     // The alternative isn't platform-specific, e.g. `rm -rf dist || echo failed`
     if (platforms.size === 0) {
       break;
     }
 
-    unsupported = unsupported.intersection(platforms);
-    if (unsupported.size === 0) {
-      return {isFallback: true, last};
-    }
+    last++;
+    common = common.intersection(platforms);
   }
 
-  return {isFallback: false, last};
+  return {common, last};
+};
+
+/**
+ * Checks whether an alternative is meant for a platform where another one fails: it works there,
+ * and fails where the other one works.
+ * @param own Where the other alternative fails
+ * @param platform One of these platforms
+ * @param other Where the alternative fails, if there is one
+ * @returns Whether it is
+ */
+const isAlternativeOn = (
+  own: ReadonlySet<Platform>,
+  platform: Platform,
+  other: ReadonlySet<Platform> | undefined,
+) => other != null && !other.has(platform) && !other.isSubsetOf(own);
+
+/**
+ * Gets where the alternatives of a run fail without it being reported, when they all still fail on
+ * some platforms, e.g. macOS for `sed -i s/a/b/ f` in `sed -i s/a/b/ f || sed -i '' s/a/b/ f`.
+ * That's where an alternative for that platform takes over: the one that runs next there, or an
+ * earlier one, unlike `cp f.bak f` in `sed -i s/a/b/ f || cp f.bak f`, which only handles errors.
+ * @param failing Where each alternative of the run fails
+ * @returns Where each of them fails without it being reported
+ */
+const partialFallbackPlatforms = (failing: readonly ReadonlySet<Platform>[]) => {
+  const removed = failing.map(() => new Set<Platform>());
+
+  // The alternative that runs next on each platform
+  const next = new Map<Platform, ReadonlySet<Platform>>();
+  failing.toReversed().forEach((own, reversedIndex) => {
+    const ownRemoved = removed[failing.length - 1 - reversedIndex];
+    own.forEach((platform) => {
+      if (isAlternativeOn(own, platform, next.get(platform))) {
+        ownRemoved?.add(platform);
+      }
+    });
+    PLATFORMS.forEach((platform) => {
+      if (!own.has(platform)) {
+        next.set(platform, own);
+      }
+    });
+  });
+
+  // The earlier alternatives by where they fail, which is one of at most 8 sets of platforms
+  const earlier = new Map<string, ReadonlySet<Platform>>();
+  failing.forEach((own, index) => {
+    own.forEach((platform) => {
+      if (earlier.values().some((other) => isAlternativeOn(own, platform, other))) {
+        removed[index]?.add(platform);
+      }
+    });
+    earlier.set([...own].sort().join(','), own);
+  });
+
+  return removed;
 };
 
 class ScriptAnalyzer {
@@ -216,6 +248,12 @@ class ScriptAnalyzer {
   /** How many scripts the analyzed source is nested in, e.g. 1 in `sh -c "..."` */
   #depth = 0;
   readonly #lineBreaks: LineBreakChecker;
+
+  /**
+   * Words joined into a nested script, e.g. in `cross-env-shell rm $DIR`, which loses their quotes,
+   * so quoting them doesn't help
+   */
+  #joinedScriptWords: WeakSet<Word> | undefined;
   /** Words analyzed as nested scripts, e.g. in `sh -c "..."`, whose text that analysis checks */
   #nestedScriptWords: WeakSet<Word> | undefined;
 
@@ -368,8 +406,15 @@ class ScriptAnalyzer {
     // position and fixes
     if (isAnalyzed && words.length === 1) {
       (this.#nestedScriptWords ||= new WeakSet()).add(word);
-    } else if (words.length > 1 && this.#reporter.issues.length > firstIssue) {
-      (this.#joinedScriptIssues ||= []).push(...this.#reporter.issues.slice(firstIssue));
+    } else if (words.length > 1) {
+      const joinedWords = this.#joinedScriptWords || new WeakSet<Word>();
+      this.#joinedScriptWords = joinedWords;
+      words.forEach((joined) => {
+        joinedWords.add(joined);
+      });
+      if (this.#reporter.issues.length > firstIssue) {
+        (this.#joinedScriptIssues ||= []).push(...this.#reporter.issues.slice(firstIssue));
+      }
     }
   }
 
@@ -492,7 +537,8 @@ class ScriptAnalyzer {
    */
   #checkWindowsBatchSyntax(context: Context, pos = 0, end = context.source.length) {
     const firstIssue = this.#reporter.issues.length;
-    const matches = [...context.source.slice(pos, end).matchAll(WINDOWS_BATCH_SYNTAX)];
+    const text = context.source.slice(pos, end);
+    const matches = WINDOWS_BATCH_SYNTAX.flatMap((syntax) => [...text.matchAll(syntax)]);
 
     matches.forEach((match) => {
       const start = pos + match.index;
@@ -537,31 +583,27 @@ class ScriptAnalyzer {
         ),
     );
     const platformsOf = (index: number) => failingPlatforms[index] || NO_PLATFORMS;
-    const runs: [first: number, last: number][] = [];
-
-    let first = 0;
-    while (first < node.commands.length) {
-      const {isFallback, last} = findFallbackEnd(node, platformsOf, first);
-      if (isFallback) {
-        runs.push([first, last]);
-      }
-      // Later alternatives are still reported, e.g. `true` in `rm ... || rmdir /s ... || true`.
-      // And where no run starts at a command, none starts at the ones that were looked at after
-      // it: they fail on the same platforms or more, and end at the same command
-      first = last + 1;
-    }
-
     // Where an alternative fails, the next one runs, but its issues still apply elsewhere, e.g.
     // `**/` in `rm -rf **/x || rd /s /q x` on macOS and Linux
     const removedPlatforms = new Map<RunnerIssue, ReadonlySet<Platform>>();
-    runs.forEach(([runStart, runEnd]) => {
-      for (let index = runStart; index <= runEnd; index++) {
-        const platforms = platformsOf(index);
-        issuesOf(index).forEach((issue) => {
-          removedPlatforms.set(issue, platforms);
-        });
+    let first = 0;
+    while (first < node.commands.length) {
+      const {common, last} = findFallbackRun(node, platformsOf, first);
+      // A single command isn't a run, e.g. `rm -rf dist` in `rm -rf dist || echo failed`
+      if (last > first) {
+        const runStart = first;
+        const failing = failingPlatforms.slice(runStart, last + 1);
+        // Where they work together on all platforms, none of their failures are reported
+        (common.size === 0 ? failing : partialFallbackPlatforms(failing)).forEach(
+          (platforms, offset) => {
+            issuesOf(runStart + offset).forEach((issue) => {
+              removedPlatforms.set(issue, platforms);
+            });
+          },
+        );
       }
-    });
+      first = last + 1;
+    }
 
     const [start] = starts;
     if (start != null && removedPlatforms.size > 0) {
@@ -930,10 +972,10 @@ class ScriptAnalyzer {
       // The words of the command that it runs, which the shell expands before it sets its variables
       commandContext: {
         ...argumentContext,
-        crossEnv: true,
+        crossEnv: invocation.crossEnv.shell ? 'arguments' : 'command',
         crossEnvVariables: invocation.crossEnv.variables,
-      },
-      context: {...argumentContext, crossEnv: true},
+      } satisfies Context,
+      context: {...argumentContext, crossEnv: 'arguments'} satisfies Context,
     };
     // `cross-env` only gets the words after it, e.g. not `$A` in `npx -p $A cross-env B=1 jest`
     const contextOf = (item: Range) => {
@@ -961,11 +1003,18 @@ class ScriptAnalyzer {
         // e.g. `A=1` in `export A=1`
         this.#words.checkDeclaredAssignment(item, contextOf(item));
       } else if (item.type === 'Word') {
-        this.#words.checkWord(item, contextOf(item), {
-          command: invocation?.target,
-          nestedScript: this.#nestedScriptWords?.has(item),
-          printedToTerminal: isPrintedToTerminal,
-        });
+        const wordContext = contextOf(item);
+        this.#words.checkWord(
+          item,
+          this.#joinedScriptWords?.has(item)
+            ? {...wordContext, fixExclusions: [...wordContext.fixExclusions, DOUBLE_QUOTE]}
+            : wordContext,
+          {
+            command: invocation?.target,
+            nestedScript: this.#nestedScriptWords?.has(item),
+            printedToTerminal: isPrintedToTerminal,
+          },
+        );
       } else {
         // Redirections are handled by the shell, not the command
         this.#redirections.checkRedirection(item, redirectionContext);
@@ -1068,7 +1117,7 @@ class ScriptAnalyzer {
           true,
           'unsupportedSyntax',
           {suggestion: 'Use `&&` instead.', syntax: 'The `;` command separator'},
-          semicolonFix(range, gap, next),
+          semicolonFix(range, gap, statement, next),
         );
         // Where `;` is supported, a line break after it may still not be, e.g. in Yarn's shell
         if (platforms.length > 0) {
@@ -1084,7 +1133,7 @@ class ScriptAnalyzer {
           next && !statement.background
             ? 'Join the commands with `&&` instead.'
             : ONE_LINE_SUGGESTION,
-          semicolon === -1 && next ? lineBreakFix(gapStart, gap, statement, next) : undefined,
+          semicolon === -1 && next ? lineBreakFix(source, gapStart, statement, next) : undefined,
         );
       }
     });
@@ -1098,8 +1147,10 @@ class ScriptAnalyzer {
     const isForWindows = this.#reporter.issues
       .slice(firstIssue)
       .some(
-        ({platforms}) =>
-          platforms.length === POSIX_PLATFORMS.length && arrayIsSubset(platforms, POSIX_PLATFORMS),
+        (issue) =>
+          this.#reporter.isFailure(issue) &&
+          issue.platforms.length === POSIX_PLATFORMS.length &&
+          arrayIsSubset(issue.platforms, POSIX_PLATFORMS),
       );
     if (!isForWindows) {
       backgroundOperators.forEach((range) => {

@@ -11,7 +11,7 @@ import type {
   Word,
   WordPart,
 } from 'unbash';
-import {OS_COMMANDS, PATTERN_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
+import {CMD_BUILTINS, OS_COMMANDS, PATTERN_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
 import {
   type Context,
   type Range,
@@ -20,7 +20,7 @@ import {
   originalText,
   withCovered,
 } from './context.ts';
-import {backslashPathFix, braceExpansionFix, quoting} from './fixes.ts';
+import {backslashPathFix, braceExpansionFix, crossEnvEdits, quoting} from './fixes.ts';
 import {
   BASH_SUGGESTION,
   CROSS_ENV_SUGGESTION,
@@ -45,6 +45,7 @@ import {
   GLOB_PART_TYPES,
   POSIX_PATH,
   TILDE_EXPANSION,
+  WHITESPACE,
   doesMentionVariables,
   isPlainAssignment,
   isPlainWord,
@@ -130,12 +131,24 @@ export const CMD_STATEMENTS: ReadonlySet<string> = new Set(['for', 'if']);
 
 /** Characters that cmd.exe splits words at or interprets */
 const CMD_SPECIAL_CHARACTERS = /[\s"%&<>^|]/;
+
+/**
+ * Characters that shells interpret outside quotes, apart from whitespace, e.g. `*` and `;` in POSIX
+ * shells, or `%` and `^` in cmd.exe
+ */
+const SHELL_SPECIAL_CHARACTERS = /["#$%&'()*;<>?[\\\]^`{|}~]/;
 /** Operators that cmd.exe runs even in a string that `echo` prints, e.g. `>` in `echo '-> done'` */
 const CMD_OPERATORS = /[&<>|]/;
 /** Backslash escapes that POSIX shells remove, but cmd.exe passes on, e.g. `\$` or `\ ` */
 const UNQUOTED_ESCAPE = /\\[\t !#$&'()*;<>?[\]`{|}~]/g;
 /** The same, in double quotes */
 const QUOTED_ESCAPE = /\\[$`]/g;
+
+/**
+ * Several backslashes, which POSIX shells replace with half as many, while programs on Windows
+ * only do so before a `"`, e.g. `\\` in `"\\.e2e"`
+ */
+const BACKSLASH_RUN = /(?<!\\)\\{2,}(?!["\\])/g;
 /** `cross-env` removes the backslashes of these escapes itself */
 const CROSS_ENV_ESCAPE = /^\\[$']$/;
 /** A named variable, e.g. `$HOME` rather than `$?` */
@@ -149,6 +162,8 @@ const RECURSIVE_GLOB = /(?:^|[/=])\*\*\//;
  */
 const WINDOWS_VARIABLE = /%[a-z_]\w+%/i;
 const WINDOWS_VARIABLES = new RegExp(WINDOWS_VARIABLE, 'gi');
+/** Several percent-encoded bytes, e.g. `%C3%BC` for `ü` in a URL */
+const PERCENT_ENCODED_BYTES = /(?:%[\da-f]{2}){2,}/gi;
 
 /**
  * A Windows path: a drive, relative prefix or first segment, then `\`-separated segments.
@@ -220,46 +235,50 @@ const parameterOperands = (operation: ParameterOperation) => {
  */
 const isTool = (command: string | undefined) => {
   const name = command?.toLowerCase();
-  return name != null && !OS_COMMANDS.has(name) && !CMD_STATEMENTS.has(name);
+  return (
+    name != null && !OS_COMMANDS.has(name) && !CMD_BUILTINS.has(name) && !CMD_STATEMENTS.has(name)
+  );
 };
 
-/** Whether `cross-env` can prefix each command, which all assignments of the command check */
-const crossEnvCommands = new WeakMap<Command, boolean>();
+/** The fix that prefixes each command with `cross-env`, which its assignments share */
+const crossEnvPrefixFixes = new WeakMap<Command, ScriptFix | undefined>();
 
 /**
- * Checks whether `cross-env` can prefix a command and take over its assignments.
+ * Gets a fix that prefixes a command with `cross-env`, which takes over its assignments.
  * It needs a command with only plain assignments before it, and can't run shell builtins, e.g. `cd`
  * in `A=1 cd x`.
- * Bash would expand braces in the arguments of `cross-env`, e.g. in `A={a,b}`, unlike in
- * assignments.
  * dash applies assignments one by one, e.g. `$A` in `A=1 B=$A cmd` is `1`, while the shell expands
  * the arguments of `cross-env` before it sets any of them.
  * @param command The command
- * @returns Whether it can
+ * @returns The fix, if `cross-env` runs the same command with the same variables
  */
-const canPrefixWithCrossEnv = (command: Command) => {
-  const cached = crossEnvCommands.get(command);
-  if (cached != null) {
-    return cached;
+const crossEnvPrefixFix = (command: Command) => {
+  if (crossEnvPrefixFixes.has(command)) {
+    return crossEnvPrefixFixes.get(command);
   }
 
   const names = new Set<string>();
-  const canPrefix =
+  const edits =
     command.name != null &&
+    !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '') &&
     command.prefix.every((item) => {
-      if (
-        !isPlainAssignment(item) ||
-        item.value.parts?.some((part) => part.type === 'BraceExpansion') ||
-        doesMentionVariables(item.value.text, names)
-      ) {
+      if (!isPlainAssignment(item) || doesMentionVariables(item.value.text, names)) {
         return false;
       }
       names.add(item.name);
       return true;
-    }) &&
-    !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '');
-  crossEnvCommands.set(command, canPrefix);
-  return canPrefix;
+    })
+      ? crossEnvEdits(command.prefix, [
+          command.name,
+          ...command.suffix.filter((item) => item.type === 'Word'),
+        ])
+      : undefined;
+  const fix = edits && {
+    description: 'Prefix the command with `cross-env`.',
+    edits: [{end: command.pos, pos: command.pos, text: 'cross-env '}, ...edits],
+  };
+  crossEnvPrefixFixes.set(command, fix);
+  return fix;
 };
 
 /** Walks a script that a word contains, e.g. in `$(...)` */
@@ -305,18 +324,13 @@ export class WordChecker {
             ? `The inline environment variable assignment \`${snippet(context, assignment)}\``
             : `The shell variable assignment \`${snippet(context, assignment)}\``,
         },
-        command && canPrefixWithCrossEnv(command)
-          ? {
-              description: 'Prefix the command with `cross-env`.',
-              edits: [{end: command.pos, pos: command.pos, text: 'cross-env '}],
-            }
-          : undefined,
+        command && crossEnvPrefixFix(command),
       );
     }
 
     // The suggested fix moves the value to `cross-env`, so only report what breaks there too
     const valueContext =
-      doesPrefixCommand && !isBashSpecific ? {...context, crossEnv: true} : context;
+      doesPrefixCommand && !isBashSpecific ? {...context, crossEnv: 'arguments' as const} : context;
     if (value.type === 'ArrayValue') {
       value.elements.forEach((word) => {
         this.checkWord(word, valueContext);
@@ -363,17 +377,23 @@ export class WordChecker {
 
   #checkBashVariable(name: string, node: Range, context: Context) {
     const kind = BASH_VARIABLES.get(name);
-
-    if (kind) {
-      this.#reporter.reportSyntax(context, node, kind, true, 'inconsistentBehavior', {
-        reason:
-          kind === 'bash'
-            ? "dash, the `sh` of Debian/Ubuntu, doesn't set it"
-            : 'only Bash 5 sets it, and macOS ships Bash 3.2',
-        suggestion: NODE_SCRIPT_SUGGESTION,
-        syntax: `The Bash variable \`$${name}\``,
-      });
+    if (!kind) {
+      return;
     }
+
+    let reason = 'only Bash 5 sets it, and macOS ships Bash 3.2';
+    if (context.portable) {
+      reason = "Yarn's shell doesn't set it, so the script fails";
+    } else if (kind === 'bash') {
+      reason = "dash, the `sh` of Debian/Ubuntu, doesn't set it";
+    }
+
+    // Yarn's shell only sets `$RANDOM` of them
+    this.#reporter.reportSyntax(context, node, kind, name === 'RANDOM', 'inconsistentBehavior', {
+      reason,
+      suggestion: NODE_SCRIPT_SUGGESTION,
+      syntax: `The Bash variable \`$${name}\``,
+    });
   }
 
   /**
@@ -405,7 +425,7 @@ export class WordChecker {
    * @param name Name of the variable
    * @param node The variable expansion
    * @param context Where the expansion is
-   * @returns The platforms that the report covers
+   * @returns The platforms that the reports cover
    */
   #checkCrossEnvVariable(
     name: string,
@@ -417,36 +437,54 @@ export class WordChecker {
       return [];
     }
 
-    if (context.crossEnvVariables?.has(name)) {
+    const syntax = `The variable \`${node.text}\``;
+    const isSetByCrossEnv = context.crossEnvVariables?.has(name);
+    const covered = isSetByCrossEnv
+      ? this.#reporter.report(
+          context,
+          node,
+          'inconsistentBehavior',
+          {
+            reason:
+              "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
+            suggestion: 'Use the value itself or a Node.js script instead.',
+            syntax,
+          },
+          POSIX_PLATFORMS,
+        )
+      : [];
+
+    if (!isSetByCrossEnv && this.#isUnsetOnWindows(name)) {
       return this.#reporter.report(
         context,
         node,
         'inconsistentBehavior',
         {
-          reason:
-            "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
-          suggestion: 'Use the value itself or a Node.js script instead.',
-          syntax: `The variable \`${node.text}\``,
+          reason: "Windows doesn't set it, so `cross-env` replaces it with an empty string",
+          suggestion: this.#variableSuggestion(name),
+          syntax,
         },
-        POSIX_PLATFORMS,
+        WINDOWS_PLATFORMS,
       );
     }
 
-    if (!this.#isUnsetOnWindows(name)) {
-      return [];
-    }
-
-    return this.#reporter.report(
-      context,
-      node,
-      'inconsistentBehavior',
-      {
-        reason: "Windows doesn't set it, so `cross-env` replaces it with an empty string",
-        suggestion: this.#variableSuggestion(name),
-        syntax: `The variable \`${node.text}\``,
-      },
-      WINDOWS_PLATFORMS,
-    );
+    // Without a shell, nothing expands the reference, e.g. in `cross-env A=1 node x $B`
+    return context.crossEnv === 'command'
+      ? [
+          ...covered,
+          ...this.#reporter.report(
+            context,
+            node,
+            'inconsistentBehavior',
+            {
+              reason: `\`cross-env\` replaces it with \`%${name}%\`, which isn't expanded without a shell`,
+              suggestion: 'Use `cross-env-shell` or a Node.js script instead.',
+              syntax,
+            },
+            WINDOWS_PLATFORMS,
+          ),
+        ]
+      : covered;
   }
 
   /**
@@ -491,27 +529,42 @@ export class WordChecker {
    * @param shouldCheckCaret Whether to check for `^`, which a nested script checks itself
    */
   #checkEscapes(word: Word, context: Context, shouldCheckCaret: boolean) {
+    // A `"` follows a literal at the end of a double-quoted string or before one, which programs on
+    // Windows also read after backslashes, e.g. in `"a\\"`
     const literals = word.parts
-      ? word.parts.flatMap((part) => {
+      ? word.parts.flatMap((part, index) => {
           if (part.type === 'Literal') {
-            return {pattern: UNQUOTED_ESCAPE, text: part.text};
+            const isBeforeQuote = word.parts?.[index + 1]?.type === 'DoubleQuoted';
+            return {pattern: UNQUOTED_ESCAPE, text: isBeforeQuote ? `${part.text}"` : part.text};
           }
           return part.type === 'DoubleQuoted'
-            ? part.parts.flatMap((child) =>
-                child.type === 'Literal' ? {pattern: QUOTED_ESCAPE, text: child.text} : [],
+            ? part.parts.flatMap((child, childIndex) =>
+                child.type === 'Literal'
+                  ? {
+                      pattern: QUOTED_ESCAPE,
+                      text: childIndex === part.parts.length - 1 ? `${child.text}"` : child.text,
+                    }
+                  : [],
               )
             : [];
         })
       : [{pattern: UNQUOTED_ESCAPE, text: word.text}];
 
     const escape = literals
-      .flatMap(({pattern, text}) => text.match(pattern) || [])
+      .flatMap(({pattern, text}) => [
+        ...(text.match(pattern) || []),
+        // `cross-env` replaces `\\` with `\` itself
+        ...((!context.crossEnv && text.match(BACKSLASH_RUN)) || []),
+      ])
       .find((match) => !(context.crossEnv && CROSS_ENV_ESCAPE.test(match)));
 
     if (escape != null) {
       this.#reporter.reportSyntax(context, word, 'posix', true, 'inconsistentBehavior', {
         reason: "cmd.exe doesn't treat backslashes as escape characters, so it passes them on",
-        suggestion: 'Use escaped double quotes (`\\"`) instead.',
+        // Both sides keep a single backslash in double quotes, e.g. `"\.e2e"`
+        suggestion: escape.startsWith('\\\\')
+          ? 'Use a single backslash in double quotes (e.g. `"\\."`) instead.'
+          : 'Use escaped double quotes (`\\"`) instead.',
         syntax: `The backslash escape \`${escape}\``,
       });
     }
@@ -543,6 +596,9 @@ export class WordChecker {
       index != null ||
       prefix === '!' ||
       (operation != null && operation.type !== 'Default' && operation.type !== 'Remove');
+    // Yarn's shell supports them, e.g. in `${A:-b}`
+    const hasPortableDefault =
+      operation?.type === 'Default' && (operation.operator === ':-' || operation.operator === ':+');
     // e.g. `${name^^}` and `${name@Q}`
     const bashKind =
       operation?.type === 'CaseModification' || operation?.type === 'Transform' ? 'bash4' : 'bash';
@@ -557,11 +613,7 @@ export class WordChecker {
     } else if (operation == null && prefix == null && context.crossEnv) {
       covered = this.#checkCrossEnvVariable(part.parameter, part, context);
     } else {
-      const isPortableSupported =
-        prefix == null &&
-        (operation == null ||
-          (operation.type === 'Default' &&
-            (operation.operator === ':-' || operation.operator === ':+')));
+      const isPortableSupported = prefix == null && (operation == null || hasPortableDefault);
 
       covered = this.#reporter.reportSyntax(
         context,
@@ -580,7 +632,10 @@ export class WordChecker {
 
     // Operands can contain further expansions, e.g. `${A:-$(cmd)}`
     const nestedContext = withCovered(context, covered);
-    this.#checkBashVariable(part.parameter, part, nestedContext);
+    // Yarn's shell doesn't fail on an unset variable with a default, e.g. `${UID:-0}`
+    if (!(hasPortableDefault && context.portable)) {
+      this.#checkBashVariable(part.parameter, part, nestedContext);
+    }
     this.#checkPackageManagerVariable(part.parameter, part, nestedContext);
     const operands = [index, ...(operation ? parameterOperands(operation) : [])];
     operands.forEach((operand) => {
@@ -755,6 +810,44 @@ export class WordChecker {
 
       case 'SingleQuoted': {
         state.hasSingleQuotes = true;
+        const suggestion = 'Use escaped double quotes (`\\"`) instead.';
+        const syntax = `The single-quoted string \`${snippet(context, part)}\``;
+        // cmd.exe's `echo` prints double quotes too, and in double quotes a placeholder like
+        // `%LANG%` is reported as a Windows variable
+        const fix =
+          state.command === 'echo' ||
+          DOUBLE_QUOTED_SPECIAL_CHARACTERS.test(part.value) ||
+          WINDOWS_VARIABLE.test(part.value)
+            ? undefined
+            : {
+                description: 'Use escaped double quotes instead.',
+                edits: [{end: part.end, pos: part.pos, text: `"${part.value}"`}],
+              };
+
+        // The string is unquoted there on all platforms, e.g. `'src/**'` in
+        // `cross-env-shell "eslint 'src/**'"`
+        if (context.crossEnv === 'script') {
+          if (
+            SHELL_SPECIAL_CHARACTERS.test(part.value) ||
+            (!state.printedToTerminal && WHITESPACE.test(part.value))
+          ) {
+            this.#reporter.report(
+              context,
+              part,
+              'inconsistentBehavior',
+              {
+                reason:
+                  "`cross-env-shell` removes single quotes before the shell runs the script, so the string isn't quoted",
+                suggestion,
+                syntax,
+              },
+              PLATFORMS,
+              fix,
+            );
+          }
+          break;
+        }
+
         // cmd.exe still splits the string at whitespace and interprets its special characters
         if (
           (state.printedToTerminal && !CMD_OPERATORS.test(part.value)) ||
@@ -774,19 +867,10 @@ export class WordChecker {
               : context.crossEnv
                 ? "cmd.exe doesn't treat single quotes as quotes, so it splits the string before `cross-env` removes them"
                 : "cmd.exe doesn't treat single quotes as quotes, so they're passed on literally",
-            suggestion: 'Use escaped double quotes (`\\"`) instead.',
-            syntax: `The single-quoted string \`${snippet(context, part)}\``,
+            suggestion,
+            syntax,
           },
-          // cmd.exe's `echo` prints double quotes too, and in double quotes a placeholder like
-          // `%LANG%` is reported as a Windows variable
-          state.command === 'echo' ||
-            DOUBLE_QUOTED_SPECIAL_CHARACTERS.test(part.value) ||
-            WINDOWS_VARIABLE.test(part.value)
-            ? undefined
-            : {
-                description: 'Use escaped double quotes instead.',
-                edits: [{end: part.end, pos: part.pos, text: `"${part.value}"`}],
-              },
+          fix,
         );
         break;
       }
@@ -915,9 +999,11 @@ export class WordChecker {
     // When a shell doesn't expand braces, many tools do (as part of their glob syntax), so only
     // report them for OS utilities
     if (
-      !hasGlob &&
       !options.skipGlobs &&
-      (options.command == null || OS_COMMANDS.has(options.command))
+      (options.command == null || OS_COMMANDS.has(options.command)) &&
+      // With a glob, OS utilities still get the braces, unless Yarn's shell expands the whole word
+      // as a glob
+      (!hasGlob || (options.command != null && !context.portable))
     ) {
       state.braceExpansions.forEach((part) => {
         if (options.redirectTarget) {
@@ -925,18 +1011,32 @@ export class WordChecker {
           return;
         }
 
-        this.#reporter.reportSyntax(
-          context,
-          part,
-          'bash',
-          true,
-          'unsupportedSyntax',
-          {
-            suggestion: 'List the alternatives explicitly instead.',
-            syntax: `The Bash-specific brace expansion \`${snippet(context, part)}\``,
-          },
-          options.declaredValue ? undefined : braceExpansionFix(word, part),
-        );
+        const suggestion = 'List the alternatives explicitly instead.';
+        const fix = options.declaredValue ? undefined : braceExpansionFix(word, part);
+        if (context.portable) {
+          this.#reporter.report(
+            context,
+            part,
+            'inconsistentBehavior',
+            {
+              reason: "Yarn's shell only expands it to the names of files that exist",
+              suggestion,
+              syntax: `The brace expansion \`${snippet(context, part)}\``,
+            },
+            PLATFORMS,
+            fix,
+          );
+        } else {
+          this.#reporter.reportSyntax(
+            context,
+            part,
+            'bash',
+            true,
+            'unsupportedSyntax',
+            {suggestion, syntax: `The Bash-specific brace expansion \`${snippet(context, part)}\``},
+            fix,
+          );
+        }
       });
     }
 
@@ -992,9 +1092,11 @@ export class WordChecker {
       options.command !== 'date' &&
       options.command !== 'printf'
     ) {
-      const match = WINDOWS_VARIABLE.exec(text);
+      // Percent-encoded bytes aren't variables, e.g. `%C3%BC` in a URL
+      const unencodedText = text.replaceAll(PERCENT_ENCODED_BYTES, '');
+      const match = WINDOWS_VARIABLE.exec(unencodedText);
       // Other `%` signs indicate a format string, e.g. `--pretty=format:%C(bold)%ad%C(reset)`
-      if (match && !text.replaceAll(WINDOWS_VARIABLES, '').includes('%')) {
+      if (match && !unencodedText.replaceAll(WINDOWS_VARIABLES, '').includes('%')) {
         const covered = this.#reporter.report(
           context,
           word,
@@ -1006,7 +1108,7 @@ export class WordChecker {
           context.portable ? PLATFORMS : POSIX_PLATFORMS,
         );
         const nestedContext = withCovered(context, covered);
-        text.matchAll(WINDOWS_VARIABLES).forEach(([reference]) => {
+        unencodedText.matchAll(WINDOWS_VARIABLES).forEach(([reference]) => {
           this.#checkPackageManagerVariable(reference.slice(1, -1), word, nestedContext, reference);
         });
       }

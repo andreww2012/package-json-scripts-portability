@@ -18,6 +18,7 @@ export {
   slidingWindow,
   sortedArrayInsertionIndex,
   sortedArrayInsertionIndexWith,
+  substringAfter,
   substringAfterLast,
   substringBefore,
   toForwardSlashes,

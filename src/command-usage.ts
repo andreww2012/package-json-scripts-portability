@@ -483,6 +483,16 @@ export const checkCommandUsage = (
 
     case 'set': {
       const [first] = values;
+
+      // Yarn's shell has no `set`, and neither has any platform an executable for it
+      if (portable) {
+        reportCommand(
+          PLATFORMS,
+          first != null && ASSIGNMENT.test(first) ? CROSS_ENV_SUGGESTION : NODE_SCRIPT_SUGGESTION,
+        );
+        break;
+      }
+
       const pipefail = optionIndex(
         (value, index) => value === 'pipefail' && SET_NAMED_OPTION.test(values[index - 1] || ''),
       );
@@ -505,11 +515,10 @@ export const checkCommandUsage = (
           suggestion: 'Remove it or use a Node.js script instead.',
         });
       } else if (ASSIGNMENT.test(first)) {
-        // Yarn's shell can't run cmd.exe's `set` either
-        report(0, portable ? PLATFORMS : POSIX_PLATFORMS, {
+        report(0, POSIX_PLATFORMS, {
           reason: "POSIX shells don't set environment variables with `set`",
           suggestion: CROSS_ENV_SUGGESTION,
-          syntax: `\`set ${truncate(first)}\``,
+          syntax: `\`set ${truncate(textOf(0))}\``,
         });
       }
       break;

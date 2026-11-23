@@ -1,9 +1,16 @@
-import type {BraceExpansionPart, Statement, Word} from 'unbash';
+import type {Assignment, BraceExpansionPart, Redirection, Statement, Word, WordPart} from 'unbash';
 import type {Range} from './context.ts';
 import {describeReplacement, truncate} from './messages.ts';
 import type {ScriptEdit, ScriptFix} from './reporter.ts';
-import {toForwardSlashes} from './utils.ts';
-import {ASSIGNMENT, GLOB_PART_TYPES, isPlainWord, staticValue} from './words.ts';
+import {substringAfter, toForwardSlashes} from './utils.ts';
+import {
+  ASSIGNMENT,
+  GLOB_PART_TYPES,
+  isPlainAssignment,
+  isPlainWord,
+  nestedSource,
+  staticValue,
+} from './words.ts';
 
 const LINE_WHITESPACE = /[\t ]/;
 const LINE_BREAK = /^\r?\n/;
@@ -13,10 +20,32 @@ const RM_OPTION = /^(?:-[Rfr]+|--force|--recursive)$/;
 /** A binary of a dependency, which package managers add to `PATH` */
 export const DEPENDENCY_BINARY = /^(?:\.\/)?node_modules\/\.bin\/([^/]+)$/;
 const JAVASCRIPT_FILE = /\.[cm]?js$/;
+/** Characters that `rimraf --glob` treats as glob syntax, e.g. `[` */
+const GLOB_SYNTAX = /[(*?[\\\]{}]|^!/;
 /** A brace expansion of plain alternatives, e.g. `{a,b}` */
 const SIMPLE_BRACE_EXPANSION = /^\{([\w+\-./@]*(?:,[\w+\-./@]*)+)\}$/;
 const PLAIN_TEXT = /^[\w+\-./:=@]*$/;
 const JOIN_LINES_DESCRIPTION = 'Join the lines.';
+
+/**
+ * Text that `cross-env` changes in the words of its command: it removes `'`, and `\` before `$`,
+ * `"`, `\` or `'`
+ */
+const CROSS_ENV_CHANGED_TEXT = /'|\\["$'\\]/;
+
+/**
+ * Values that `cross-env` changes, e.g. by removing their quotes or replacing variables, or only
+ * reads up to a line break, or with `~` at the start or after `:`, which shells expand in
+ * assignments, but not in arguments
+ */
+const CROSS_ENV_CHANGED_VALUE = /[\n\r$\\]|:~|^["'~]/;
+/** Parts of a value that shells don't split or expand as globs in an argument either */
+const UNSPLIT_PART_TYPES: ReadonlySet<WordPart['type']> = new Set([
+  'DoubleQuoted',
+  'Literal',
+  'SingleQuoted',
+]);
+const QUOTES_OR_BACKSLASH = /["'\\]/;
 
 /** Creates a fix that replaces a piece of the script */
 export const replacement = (node: Range, original: string, text: string): ScriptFix => ({
@@ -32,6 +61,63 @@ export const quoting = (word: Range, description: string): ScriptFix => ({
     {end: word.end, pos: word.end, text: '"'},
   ],
 });
+
+/** Gets the value of a word, with placeholders for its expansions */
+const maskedValue = (word: Word) => (word.parts ? nestedSource(word.parts) : word.value);
+
+/**
+ * Gets the edits that keep the value of an assignment the same in an argument of `cross-env`.
+ * @param value The value
+ * @returns The edits, e.g. ones that quote `./bin:$PATH`, which shells split in arguments, or
+ * `undefined` if no edits can keep it
+ */
+const crossEnvValueEdits = (value: Word) => {
+  const parts = value.parts || [];
+  if (
+    CROSS_ENV_CHANGED_VALUE.test(maskedValue(value)) ||
+    parts.some((part) => part.type === 'BraceExpansion')
+  ) {
+    return undefined;
+  }
+
+  if (parts.every((part) => UNSPLIT_PART_TYPES.has(part.type))) {
+    return [];
+  }
+  return QUOTES_OR_BACKSLASH.test(value.text) ? undefined : quoting(value, '').edits;
+};
+
+/**
+ * Checks whether `cross-env` runs a command with the same words as the shell, e.g. not with
+ * `console.log('a')`, whose quotes it removes, or with `""`, which it drops.
+ * @param words The command's name and arguments
+ * @returns Whether it does
+ */
+const isCrossEnvCommandSafe = (words: readonly Word[]) =>
+  words.every((word) => {
+    const value = maskedValue(word);
+    return value.length > 0 && !CROSS_ENV_CHANGED_TEXT.test(value);
+  });
+
+/**
+ * Gets the edits that keep a command the same when `cross-env` sets its variables.
+ * @param assignments The items that become the arguments of `cross-env` before the command
+ * @param commandWords The command's name and arguments
+ * @returns The edits, or `undefined` if `cross-env` would run something else
+ */
+export const crossEnvEdits = (
+  assignments: readonly (Assignment | Redirection | Word)[],
+  commandWords: readonly Word[],
+) => {
+  const edits: ScriptEdit[] = [];
+  const isSafe =
+    isCrossEnvCommandSafe(commandWords) &&
+    assignments.every((item) => {
+      const valueEdits = isPlainAssignment(item) ? crossEnvValueEdits(item.value) : undefined;
+      edits.push(...(valueEdits || []));
+      return valueEdits;
+    });
+  return isSafe ? edits : undefined;
+};
 
 /**
  * Finds the `\` line continuation before a line, e.g. in `a \` + line break + `b`.
@@ -111,10 +197,13 @@ export const commandFix = (
 
   switch (name) {
     case 'env': {
-      // Only without options, e.g. `env CI=1 jest`
-      return first &&
-        ASSIGNMENT.test(first.text) &&
-        argumentWords.some((word) => !ASSIGNMENT.test(word.text))
+      const commandIndex = argumentWords.findIndex((word) => !ASSIGNMENT.test(word.text));
+      // Only without options, e.g. `env CI=1 jest`. The shell splits the values the same either way
+      return commandIndex > 0 &&
+        argumentWords
+          .slice(0, commandIndex)
+          .every((word) => !CROSS_ENV_CHANGED_VALUE.test(substringAfter(maskedValue(word), '='))) &&
+        isCrossEnvCommandSafe(argumentWords.slice(commandIndex))
         ? replacement(nameWord, nameWord.text, 'cross-env')
         : undefined;
     }
@@ -131,7 +220,10 @@ export const commandFix = (
       if (
         paths.length === 0 ||
         paths.some((word) => staticValue(word)?.startsWith('-') && word.text !== '--') ||
-        globs.some((word) => !isPlainWord(word, GLOB_PART_TYPES))
+        globs.some((word) => !isPlainWord(word, GLOB_PART_TYPES)) ||
+        // With `--glob`, the other paths are patterns too, e.g. `dist [old]`
+        (globs.length > 0 &&
+          paths.some((word) => !globs.includes(word) && GLOB_SYNTAX.test(staticValue(word) ?? '*')))
       ) {
         return undefined;
       }
@@ -177,12 +269,18 @@ export const commandFix = (
  * Gets a fix for running a command by its path, e.g. `node ./build.js` for `./build.js`.
  * @param name Path that the command was invoked with
  * @param nameWord Word that the path comes from
+ * @param isDirectoryChanged Whether a command before it changed the directory, e.g. `cd`, so that
+ * the binary's name could run another package's binary
  * @returns The fix, if the path is a dependency's binary or a JavaScript file
  */
-export const pathCommandFix = (name: string, nameWord: Word): ScriptFix | undefined => {
+export const pathCommandFix = (
+  name: string,
+  nameWord: Word,
+  isDirectoryChanged: boolean,
+): ScriptFix | undefined => {
   const binary = DEPENDENCY_BINARY.exec(name)?.[1];
   if (binary) {
-    return replacement(nameWord, nameWord.text, binary);
+    return isDirectoryChanged ? undefined : replacement(nameWord, nameWord.text, binary);
   }
 
   return JAVASCRIPT_FILE.test(name)
@@ -233,33 +331,43 @@ export const braceExpansionFix = (word: Word, part: BraceExpansionPart) => {
   );
 };
 
+const hasAlternatives = ({command}: Statement) =>
+  command.type === 'AndOr' && command.operators.includes('||');
+
 /**
- * Checks whether joining a statement to the previous one with `&&` keeps the logic the same,
- * apart from stopping after a failure.
+ * Checks whether joining two statements with `&&` keeps the logic the same, apart from stopping
+ * after a failure.
+ * @param statement The first statement
  * @param next The statement that follows
  * @returns Whether the rest of the logic stays the same, e.g. not for `a; b || c`, which would run
- * `c` when `a` fails
+ * `c` when `a` fails, or for `a || b; c`, which cmd.exe would read as `a || (b && c)`
  */
-const canChain = (next: Statement) =>
-  !next.background && !(next.command.type === 'AndOr' && next.command.operators.includes('||'));
+const canChain = (statement: Statement, next: Statement) =>
+  !next.background && !hasAlternatives(statement) && !hasAlternatives(next);
 
 /**
  * Gets a fix for a line break that separates statements.
+ * @param source The source that the statements are in
  * @param gapStart Where the text between the statements starts, after the bodies of the first
  * statement's here-documents
- * @param gap The text between the statements, including the line break
  * @param statement The statement before the line break
  * @param next The statement that follows it
  * @returns The fix, if the text is only whitespace and the rest of the logic stays the same
  */
 export const lineBreakFix = (
+  source: string,
   gapStart: number,
-  gap: string,
   statement: Statement,
   next: Statement,
 ): ScriptFix | undefined => {
-  // A here-document's closing line must stay on its own
-  if (gap.trim().length > 0 || gapStart !== statement.end) {
+  const gap = source.slice(gapStart, next.pos);
+  if (
+    gap.trim().length > 0 ||
+    // A here-document's closing line must stay on its own
+    gapStart !== statement.end ||
+    // e.g. after `\` and a carriage return, whose fix removes the carriage return instead
+    lineContinuationStart(source, gapStart + gap.indexOf('\n') + 1) !== -1
+  ) {
     return undefined;
   }
 
@@ -271,7 +379,7 @@ export const lineBreakFix = (
     };
   }
 
-  return canChain(next)
+  return canChain(statement, next)
     ? {
         description: 'Replace the line break with `&&`, which stops at the first failing command.',
         edits: [{end: next.pos, pos: gapStart, text: ' && '}],
@@ -310,13 +418,15 @@ export const joinLinesFix = (
  * Gets a fix for a `;` that separates commands.
  * @param range Where the `;` is
  * @param gap The text between the commands, including the `;`
+ * @param statement The statement before it
  * @param next The statement that follows it, if any
- * @returns The fix, unless the statement that follows has alternatives (`||`) or runs in the
+ * @returns The fix, unless a statement has alternatives (`||`) or the next one runs in the
  * background
  */
 export const semicolonFix = (
   range: Range,
   gap: string,
+  statement: Statement,
   next: Statement | undefined,
 ): ScriptFix | undefined => {
   if (!next) {
@@ -326,7 +436,7 @@ export const semicolonFix = (
     return {description: 'Remove the `;`.', edits: [{...range, text}]};
   }
 
-  return gap.trim() === ';' && canChain(next)
+  return gap.trim() === ';' && canChain(statement, next)
     ? {
         description: 'Replace `;` with `&&`, which stops at the first failing command.',
         edits: [{end: next.pos, pos: range.pos - gap.indexOf(';'), text: ' && '}],

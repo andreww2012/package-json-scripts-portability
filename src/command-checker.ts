@@ -6,6 +6,7 @@ import {
   EXACT_NAME_BUILTINS,
   EXEC_SUBCOMMANDS,
   EXEC_VALUE_OPTIONS,
+  NON_PORTABLE_BUILTINS,
   NPM_EXEC_VALUE_OPTIONS,
   NPM_VALUE_OPTIONS,
   OS_COMMANDS,
@@ -16,7 +17,13 @@ import {
   WRAPPER_VALUE_OPTIONS,
 } from './commands.ts';
 import {type Context, type Shell, withCovered} from './context.ts';
-import {DEPENDENCY_BINARY, commandFix, pathCommandFix, replacement} from './fixes.ts';
+import {
+  DEPENDENCY_BINARY,
+  commandFix,
+  crossEnvEdits,
+  pathCommandFix,
+  replacement,
+} from './fixes.ts';
 import {NODE_SCRIPT_SUGGESTION, SHELL_SCRIPT_SUGGESTION, truncate} from './messages.ts';
 import {
   LINUX_PLATFORMS,
@@ -47,6 +54,8 @@ import {
 interface CrossEnvInvocation {
   /** Where the command that it runs starts, after the variables that it sets */
   commandStart: number;
+  /** Whether it's `cross-env-shell`, which runs the command with a shell */
+  shell: boolean;
   /** Where its arguments start */
   start: number;
   /** Names of the variables that it sets */
@@ -136,6 +145,9 @@ const EXIT_STATUSES: ReadonlyMap<string, string> = new Map([
   ['true', '0'],
 ]);
 
+/** Commands that change the directory of the commands that follow */
+const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(['cd', 'pushd']);
+
 /** Options of `npx` and `npm exec` that take a shell string */
 const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
 
@@ -210,7 +222,7 @@ const findCommandIndex = (
 
 export interface NestedWordsOptions {
   bashOptions?: ReadonlySet<string>;
-  crossEnv: boolean;
+  crossEnv: Context['crossEnv'];
   /** Whether `concurrently` runs the script, which expands globs of script names itself */
   maskScriptGlobs?: boolean;
   shell: Shell;
@@ -277,6 +289,8 @@ const findUsageIssues = (
 /** Checks commands, e.g. whether they're available everywhere, and the commands they run */
 export class CommandChecker {
   readonly #analyzeNestedWords: NestedWordsAnalyzer;
+  /** Sources in which a command changed the directory, e.g. with `cd`, by the walk so far */
+  readonly #directoryChangeSources = new Set<string>();
   readonly #options: CommandOptions;
   /** Fixes that depend on where a command is, by the command's name, e.g. `exit 0` for `true` */
   readonly #positionalFixes = new Map<Word, ScriptFix>();
@@ -328,6 +342,7 @@ export class CommandChecker {
 
     // In `export A=1 && jest`, only `jest` uses the variables
     const [exporting, command] = commands;
+    // eslint-disable-next-line unicorn/prefer-early-return -- The condition is too long to negate
     if (
       list.type === 'AndOr' &&
       list.operators.length === 1 &&
@@ -349,13 +364,20 @@ export class CommandChecker {
         new Set(exporting.suffix.filter(isPlainAssignment).map(({name}) => name)),
       )
     ) {
-      this.#positionalFixes.set(exporting.name, {
-        description: 'Replace `export ... &&` with `cross-env`.',
-        edits: [
-          {end: exporting.name.end, pos: exporting.name.pos, text: 'cross-env'},
-          {end: command.pos, pos: exporting.end, text: ' '},
-        ],
-      });
+      const edits = crossEnvEdits(
+        [...exporting.suffix, ...command.prefix.filter((item) => item.type === 'Assignment')],
+        [command.name, ...command.suffix.filter((item) => item.type === 'Word')],
+      );
+      if (edits) {
+        this.#positionalFixes.set(exporting.name, {
+          description: 'Replace `export ... &&` with `cross-env`.',
+          edits: [
+            {end: exporting.name.end, pos: exporting.name.pos, text: 'cross-env'},
+            {end: command.pos, pos: exporting.end, text: ' '},
+            ...edits,
+          ],
+        });
+      }
     }
   }
 
@@ -395,6 +417,23 @@ export class CommandChecker {
 
     if (context.portable && PORTABLE_SHELL_BUILTINS.has(name)) {
       return [];
+    }
+
+    if (context.portable && NON_PORTABLE_BUILTINS.has(name)) {
+      const info = COMMANDS.get(name);
+      return this.#reporter.report(
+        context,
+        nameWord,
+        'unsupportedCommand',
+        {
+          command: name,
+          // Suggestions for Bash builtins are about `sh` and cmd.exe
+          suggestion: (!info?.bashBuiltin && info?.suggestion) || NODE_SCRIPT_SUGGESTION,
+        },
+        PLATFORMS,
+        // e.g. `cross-env` for `export`, but not `.` for `source`, which Yarn's shell lacks too
+        this.#positionalFixes.get(nameWord),
+      );
     }
 
     const lowerCaseName = name.toLowerCase();
@@ -472,11 +511,16 @@ export class CommandChecker {
       return result;
     }
 
+    if (DIRECTORY_COMMANDS.has(name.toLowerCase())) {
+      this.#directoryChangeSources.add(context.source);
+    }
+
     const values = argumentWords.map(staticValue);
     if (name === 'cross-env' || name === 'cross-env-shell') {
       const commandIndex = crossEnvCommandIndex(argumentWords, values);
       result.crossEnv = {
         commandStart: argumentWords[commandIndex]?.pos ?? Number.POSITIVE_INFINITY,
+        shell: name === 'cross-env-shell',
         start: nameWord.end,
         variables: new Set(
           argumentWords
@@ -549,7 +593,7 @@ export class CommandChecker {
                 'cmd.exe treats `/` as an option prefix; run files with `node`, and binaries by their name instead.',
               syntax: `Running a command by its path (\`${truncate(nameWord.text)}\`)`,
             },
-            pathCommandFix(name, nameWord),
+            pathCommandFix(name, nameWord, this.#directoryChangeSources.has(context.source)),
           ),
         );
       }
@@ -638,7 +682,7 @@ export class CommandChecker {
     const nestedShellLine = (index: number, isCrossEnv = false) => {
       if (index !== -1 && depth < MAX_DEPTH) {
         this.#analyzeNestedWords(argumentWords.slice(index), context, {
-          crossEnv: isCrossEnv,
+          crossEnv: isCrossEnv && 'script',
           shell: 'native',
         });
       }
@@ -711,7 +755,7 @@ export class CommandChecker {
         const index = crossEnvCommandIndex(argumentWords, values);
 
         if (name === 'cross-env') {
-          return invoke(index, {...context, crossEnv: true}, true);
+          return invoke(index, {...context, crossEnv: 'command'}, true);
         }
 
         nestedShellLine(index, true);

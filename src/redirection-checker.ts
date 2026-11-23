@@ -101,11 +101,10 @@ export class RedirectionChecker {
           suggestion: NODE_SCRIPT_SUGGESTION,
           syntax: `The here-document \`${redirection.operator}\``,
         });
-        if (redirection.closing) {
-          const ends = mapGetOrInsert(this.hereDocumentEnds, context.source, []);
-          const {end} = redirection.closing;
-          ends.splice(sortedArrayInsertionIndex(ends, end, {rightmost: true}), 0, end);
-        }
+        // Without a closing line, the body ends with the script
+        const end = redirection.closing?.end ?? redirection.body.end;
+        const ends = mapGetOrInsert(this.hereDocumentEnds, context.source, []);
+        ends.splice(sortedArrayInsertionIndex(ends, end, {rightmost: true}), 0, end);
         return;
       }
 

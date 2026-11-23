@@ -31,3 +31,12 @@ Fixed several wrong fixes and reports:
 - Started checking the commands after npm's `-w` and `--workspace <name>`, like `rm` in `npm exec -w pkg -- rm -rf x`, and after `cross-env A=$B`
 - Stopped reporting del-cli's `del` in Yarn's shell, which can't run cmd.exe's builtins
 - Stopped fixes from putting `cross-env` before assignments that use each other, like `PORT=3000 URL=http://localhost:$PORT node x`, and from removing `> /dev/null` before a pipe, like in `a > /dev/null | b`
+- Stopped the `cross-env` fixes from changing what runs, like quotes in `node -e "console.log('a')"`, and started quoting values that shells split in arguments, like `PATH="./bin:$PATH"`
+- Stopped fixes from turning `a || b; c` into `a || b && c`, which cmd.exe reads differently, and from joining the lines after `\` and a carriage return
+- Stopped fixes from replacing backslashes in the arguments of cmd.exe's `type`, `more` and `set`, from shortening binary paths after `cd`, and from using `rimraf --glob` with paths that it reads as globs, like `"dist [old]"`
+- Stopped offering quotes for words that `cross-env-shell` and `pnpm exec -c` join into a script, which loses them
+- Stopped reporting the body of a here-document without a closing line, `( cd ... )` followed only by `;` or a comment, and URL-encoded text like `%C3%BC` as a Windows variable
+- Started reporting variables in the command of `cross-env`, which it doesn't expand on Windows, and single-quoted strings in the script of `cross-env-shell`, which it unquotes
+- Started reporting shell builtins like `export` and `set`, Bash variables like `$UID`, and brace expansions in Yarn's shell on all platforms
+- Started reporting `&` in scripts with other macOS and Linux issues, `\\` outside `cross-env`, braces with globs for OS commands, and cmd.exe's `if a==b` comparisons
+- Made `||` fallbacks that don't cover all platforms still report the platforms where all of them fail, like Windows for `sed -i x f || sed -i '' x f`

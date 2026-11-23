@@ -417,9 +417,11 @@ export const CMD_BUILTINS: ReadonlySet<string> = new Set([
   'rem',
   'ren',
   'rename',
+  'set',
   'setlocal',
   'start',
   'title',
+  'type',
   'ver',
 ]);
 
@@ -473,6 +475,7 @@ export const OS_COMMANDS: ReadonlySet<string> = new Set([
   'echo',
   'exit',
   'mkdir',
+  'more',
   'rmdir',
   'sort',
   'timeout',
@@ -584,3 +587,14 @@ export const SHELL_STATE_COMMANDS: ReadonlySet<string> = new Set([
   'unset',
   'wait',
 ]);
+
+/**
+ * Shell builtins that Yarn's portable shell doesn't have, and that have no executables that work
+ * the same, e.g. `export`.
+ * `set` is checked along with its options, and `command` has executables on some platforms
+ */
+export const NON_PORTABLE_BUILTINS: ReadonlySet<string> = new Set(
+  [...SHELL_STATE_COMMANDS, ...EXACT_NAME_BUILTINS].filter(
+    (name) => !PORTABLE_SHELL_BUILTINS.has(name) && name !== 'command' && name !== 'set',
+  ),
+);

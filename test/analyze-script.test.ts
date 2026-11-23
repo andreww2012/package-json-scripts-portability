@@ -369,6 +369,21 @@ describe('analyzeScript', () => {
           ['unsupportedSyntax', '<<EOF', 'win32'],
         ],
       ],
+      // Without a closing line, the body ends with the script
+      [
+        'cat <<EOF\na; b # c',
+        [
+          ['unsupportedCommand', 'cat', 'win32'],
+          ['unsupportedSyntax', '<<EOF', 'win32'],
+        ],
+      ],
+      [
+        'cat <<EOF\na; b # c\nEOF ',
+        [
+          ['unsupportedCommand', 'cat', 'win32'],
+          ['unsupportedSyntax', '<<EOF', 'win32'],
+        ],
+      ],
       ['node x >| out.log', [['unsupportedSyntax', '>| out.log', 'win32']]],
       ['node x > /dev/null 2>&1', [['unsupportedSyntax', '/dev/null', 'win32']]],
       ['node x --out-dir=/tmp/build', []],
@@ -389,6 +404,16 @@ describe('analyzeScript', () => {
       [
         '(cd packages/a && npm test) > log && npm run b',
         [['inconsistentBehavior', '(cd packages/a && npm test)', 'win32']],
+      ],
+      // Nor are `;` and a comment
+      ['(cd a && b);', [['unsupportedSyntax', ';', 'win32']]],
+      ['(cd a && b) # done', [['unsupportedSyntax', '# done', 'win32']]],
+      [
+        '(cd a && b); c',
+        [
+          ['inconsistentBehavior', '(cd a && b)', 'win32'],
+          ['unsupportedSyntax', ';', 'win32'],
+        ],
       ],
       ['(tsc;)', [['unsupportedSyntax', ';', 'win32']]],
       // Not the `function` keyword
@@ -563,6 +588,7 @@ describe('analyzeScript', () => {
       ],
       ['set', []],
       ['set +x', [['unsupportedUsage', 'set +x', 'win32']]],
+      ['more a.{js,map}', [['unsupportedSyntax', '{js,map}', 'linux,win32']]],
       [
         'copy /y a b && move a b && ren a b',
         [
@@ -572,6 +598,13 @@ describe('analyzeScript', () => {
         ],
       ],
       ['if not exist dist mkdir dist', [['unsupportedSyntax', 'if not exist', 'darwin,linux']]],
+      ['if "%CI%"=="true" echo x', [['unsupportedSyntax', 'if "%CI%"=="true"', 'darwin,linux']]],
+      ['if "a b"=="c" echo x', [['unsupportedSyntax', 'if "a b"=="c"', 'darwin,linux']]],
+      ['if /i not %A% == b echo x', [['unsupportedSyntax', 'if /i not %A% == b', 'darwin,linux']]],
+      [
+        'IF %ERRORLEVEL% NEQ 0 exit 1',
+        [['unsupportedSyntax', 'IF %ERRORLEVEL% NEQ 0', 'darwin,linux']],
+      ],
       // POSIX shells parse them as commands
       ['IF EXIST dist rd /s /q dist', [['unsupportedSyntax', 'IF EXIST', 'darwin,linux']]],
       ['IF NOT EXIST dist mkdir dist', [['unsupportedSyntax', 'IF NOT EXIST', 'darwin,linux']]],
@@ -589,6 +622,13 @@ describe('analyzeScript', () => {
         ],
       ],
       ['printf "%s%n%" x', [['unsupportedCommand', 'printf', 'win32']]],
+      // Percent-encoded bytes rather than variables
+      ['open-cli http://localhost:3000/?name=J%C3%BCrgen', []],
+      ['open-cli http://localhost/%C3%A9', []],
+      [
+        'open-cli "http://localhost/?a=%C3%A9&p=%PORT%"',
+        [['unsupportedSyntax', '"http://localhost/?a=%C3%A9&p=%PORT%"', 'darwin,linux']],
+      ],
       ['cmd /c "rd /s /q dist"', [['unsupportedCommand', 'cmd', 'darwin,linux']]],
       [
         String.raw`node .\scripts\build.js`,
@@ -606,6 +646,22 @@ describe('analyzeScript', () => {
       [String.raw`del /q dist\*`, [['unsupportedCommand', 'del', 'darwin,linux']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    it.each<[string, string]>([
+      [
+        String.raw`jest --testPathIgnorePatterns "\\.e2e\\."`,
+        'Use a single backslash in double quotes (e.g. `"\\."`) instead.',
+      ],
+      [String.raw`node x \$a`, 'Use escaped double quotes (`\\"`) instead.'],
+    ])('suggests how to replace the backslashes in %j', (script, suggestion) => {
+      expect(analyzeScript(script)[0]?.data.suggestion).toBe(suggestion);
+    });
+
+    it('shows the text of `set` as the script has it', () => {
+      expect(analyzeScript(String.raw`set OUT=dist\app\x.js`)[0]?.data.syntax).toBe(
+        String.raw`${'`'}set OUT=dist\app\x.js${'`'}`,
+      );
     });
   });
 
@@ -791,7 +847,49 @@ describe('analyzeScript', () => {
       ['if true; then node x; fi', [['unsupportedSyntax', 'if', 'darwin,linux,win32']]],
       ['echo `date`', [['unsupportedSyntax', '`date`', 'darwin,linux,win32']]],
       ['echo ${A#b}', [['unsupportedSyntax', '${A#b}', 'darwin,linux,win32']]],
-      ['eslint {src,test}/**/*.js && cp a.{js,map} dist', [['unsupportedCommand', 'cp', 'win32']]],
+      // Yarn's shell only expands braces to the names of files that exist
+      [
+        'eslint {src,test}/**/*.js && cp a.{js,map} dist',
+        [
+          ['unsupportedCommand', 'cp', 'win32'],
+          ['inconsistentBehavior', '{js,map}', 'darwin,linux,win32'],
+        ],
+      ],
+      [
+        'mkdir -p dist/{esm,cjs}',
+        [
+          ['unsupportedCommand', 'mkdir', 'win32'],
+          ['inconsistentBehavior', '{esm,cjs}', 'darwin,linux,win32'],
+        ],
+      ],
+      // Builtins that Yarn's shell doesn't have, and that have no executables
+      ['export A=1 && jest', [['unsupportedCommand', 'export', 'darwin,linux,win32']]],
+      ['set -e', [['unsupportedCommand', 'set', 'darwin,linux,win32']]],
+      ['SET A=1', [['unsupportedCommand', 'SET', 'darwin,linux,win32']]],
+      ['eval "x"', [['unsupportedCommand', 'eval', 'darwin,linux,win32']]],
+      ['. ./env.sh', [['unsupportedCommand', '.', 'darwin,linux,win32']]],
+      ['source x', [['unsupportedCommand', 'source', 'darwin,linux,win32']]],
+      ['pushd a', [['unsupportedCommand', 'pushd', 'darwin,linux,win32']]],
+      // They have executables on macOS and Linux
+      [
+        '[ -d a ] && test -f b',
+        [
+          ['unsupportedCommand', '[', 'win32'],
+          ['unsupportedCommand', 'test', 'win32'],
+        ],
+      ],
+      // Yarn's shell only sets `$RANDOM` of the Bash variables
+      [
+        'node x $UID ${SECONDS} $RANDOM',
+        [
+          ['inconsistentBehavior', '$UID', 'darwin,linux,win32'],
+          ['inconsistentBehavior', '${SECONDS}', 'darwin,linux,win32'],
+        ],
+      ],
+      // But it supports defaults
+      ['node x ${UID:-0} ${SECONDS:+x}', []],
+      // With a glob, the braces are part of it
+      ['cp src/{a,b}/*.js dist', [['unsupportedCommand', 'cp', 'win32']]],
       [
         String.raw`node scripts\build.js`,
         [['inconsistentBehavior', String.raw`scripts\build.js`, 'darwin,linux,win32']],
@@ -812,6 +910,44 @@ describe('analyzeScript', () => {
       ],
     ])('%s', (script, expected) => {
       expect(summarize(script, yarn)).toStrictEqual(expected);
+    });
+
+    it.each<[string, FixSummary[]]>([
+      [
+        'export A=1 && jest',
+        [['export', 'Replace `export ... &&` with `cross-env`.', 'cross-env A=1 jest']],
+      ],
+      // Yarn's shell doesn't have `.` either
+      ['source .env && tsc', []],
+      [
+        'cp a.{js,map} dist',
+        [['{js,map}', 'Replace `a.{js,map}` with `a.js a.map`.', 'cp a.js a.map dist']],
+      ],
+    ])('only keeps the fixes that work there in %j', (script, expected) => {
+      expect(summarizeFixes(script, yarn)).toStrictEqual(expected);
+    });
+
+    it.each<[string, Record<string, string>]>([
+      ['pushd a', {command: 'pushd', suggestion: 'Use a Node.js script instead.'}],
+      ['set A=1', {command: 'set', suggestion: 'Use `cross-env` instead.'}],
+      [
+        'echo $UID',
+        {
+          reason: "Yarn's shell doesn't set it, so the script fails",
+          suggestion: 'Use a Node.js script instead.',
+          syntax: 'The Bash variable `$UID`',
+        },
+      ],
+      [
+        'mkdir -p dist/{esm,cjs}',
+        {
+          reason: "Yarn's shell only expands it to the names of files that exist",
+          suggestion: 'List the alternatives explicitly instead.',
+          syntax: 'The brace expansion `{esm,cjs}`',
+        },
+      ],
+    ])('explains the report of %j', (script, data) => {
+      expect(analyzeScript(script, yarn).at(-1)?.data).toStrictEqual(data);
     });
   });
 
@@ -1065,6 +1201,7 @@ describe('analyzeScript', () => {
         ],
       ],
       ['COMMAND -v node', [['unsupportedCommand', 'COMMAND', 'linux,win32']]],
+      ['MORE x', [['unsupportedCommand', 'MORE', 'linux']]],
       ['EXIT /B 1', [['unsupportedUsage', 'EXIT /B', 'darwin,linux']]],
       // Not OS commands
       ['Xvfb :99 && R x && TSC', []],
@@ -1204,16 +1341,13 @@ describe('analyzeScript', () => {
     });
 
     it.each<[string, FixSummary[]]>([
-      [
-        'pnpm exec -c npm i a@^5',
-        [['a@^5', 'Quote it with escaped double quotes.', 'pnpm exec -c npm i "a@^5"']],
-      ],
-      [
-        'cross-env-shell A=1 tool src/**/*.js',
-        [['src/**/*.js', QUOTE, 'cross-env-shell A=1 tool "src/**/*.js"']],
-      ],
       ['cross-env-shell tsc\r x', [['\r', 'Remove the carriage return.', 'cross-env-shell tsc x']]],
-    ])('keeps the fixes of the words in %j', (script, expected) => {
+      // The joined script loses the quotes of the words, so quoting them doesn't help
+      ['pnpm exec -c npm i a@^5', []],
+      ['cross-env-shell A=1 tool src/**/*.js', []],
+      ['aubx -c tool src/**/*.js', []],
+      ["cross-env-shell A=1 tool 'a b'", []],
+    ])('keeps the fixes of the words that still work in %j', (script, expected) => {
       expect(summarizeFixes(script)).toStrictEqual(expected);
     });
   });
@@ -1413,6 +1547,15 @@ describe('analyzeScript', () => {
         ],
       ],
       ['echo {a,b}', [['unsupportedSyntax', '{a,b}', 'linux,win32']]],
+      // Also with a glob, which OS utilities don't expand themselves either
+      [
+        'cp src/{a,b}/*.js dist',
+        [
+          ['unsupportedCommand', 'cp', 'win32'],
+          ['unsupportedSyntax', '{a,b}', 'linux,win32'],
+        ],
+      ],
+      ['eslint src/{a,b}/*.js', []],
       // Shells don't expand braces in assignments, `case` words and here-strings
       ['FOO={a,b} node x.js', [['unsupportedSyntax', 'FOO={a,b}', 'win32']]],
       ['case {a,b} in a) node x;; esac', [['unsupportedSyntax', 'case', 'win32']]],
@@ -1632,11 +1775,73 @@ describe('analyzeScript', () => {
           ['unsupportedCommand', 'true', 'win32'],
         ],
       ],
+      // Only the platforms where all alternatives fail are left
       [
         'open x || xdg-open x',
         [
+          ['unsupportedCommand', 'open', 'win32'],
+          ['unsupportedCommand', 'xdg-open', 'win32'],
+        ],
+      ],
+      [
+        "sed -i s/a/b/ f || sed -i '' s/a/b/ f",
+        [
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['inconsistentBehavior', "''", 'win32'],
+        ],
+      ],
+      // An alternative only takes over where it works and the other one doesn't, e.g. not `cp`,
+      // which handles errors instead
+      [
+        'open x || xdg-open x || cp a b',
+        [
+          ['unsupportedCommand', 'open', 'win32'],
+          ['unsupportedCommand', 'xdg-open', 'win32'],
+          ['unsupportedCommand', 'cp', 'win32'],
+        ],
+      ],
+      [
+        'sed -i s/a/b/ f || cp f.bak f',
+        [
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['unsupportedUsage', 'sed -i', 'darwin'],
+          ['unsupportedCommand', 'cp', 'win32'],
+        ],
+      ],
+      [
+        'grep -P x f || rm -rf dist',
+        [
+          ['unsupportedCommand', 'grep', 'win32'],
+          ['unsupportedUsage', 'grep -P', 'darwin'],
+          ['unsupportedCommand', 'rm', 'win32'],
+        ],
+      ],
+      [
+        'rm -rf dist || open x',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
           ['unsupportedCommand', 'open', 'linux,win32'],
-          ['unsupportedCommand', 'xdg-open', 'darwin,win32'],
+        ],
+      ],
+      // On Linux, `cp` runs after `open`
+      [
+        'open x || cp a b || xdg-open x',
+        [
+          ['unsupportedCommand', 'open', 'linux,win32'],
+          ['unsupportedCommand', 'cp', 'win32'],
+          ['unsupportedCommand', 'xdg-open', 'win32'],
+        ],
+      ],
+      // Several alternatives for the same platforms
+      ['cp -r a b || rsync -a a b || xcopy a b /e', []],
+      [`${'rm -rf a || '.repeat(50)}rd /s /q a`, []],
+      [
+        'rm -rf dist || open x || xdg-open x',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['unsupportedCommand', 'open', 'win32'],
+          ['unsupportedCommand', 'xdg-open', 'win32'],
         ],
       ],
       [
@@ -1753,31 +1958,47 @@ describe('analyzeScript', () => {
   });
 
   // POSIX shells expand them before `cross-env` sets them, while on Windows `cross-env` replaces
-  // them with the new values
+  // them with `%NAME%`, which only a shell expands, e.g. the one of `cross-env-shell`
   describe('variables that `cross-env` sets for its command', () => {
     it.each<[string, Summary[]]>([
       [
         'cross-env NODE_ENV=production webpack --env mode=$NODE_ENV',
-        [['inconsistentBehavior', '$NODE_ENV', 'darwin,linux']],
+        [
+          ['inconsistentBehavior', '$NODE_ENV', 'darwin,linux'],
+          ['inconsistentBehavior', '$NODE_ENV', 'win32'],
+        ],
       ],
       [
         'cross-env A=1 B=2 node x ${B} "$A"',
         [
           ['inconsistentBehavior', '${B}', 'darwin,linux'],
+          ['inconsistentBehavior', '${B}', 'win32'],
           ['inconsistentBehavior', '$A', 'darwin,linux'],
+          ['inconsistentBehavior', '$A', 'win32'],
         ],
       ],
       // Windows doesn't set it, but `cross-env` does
-      ['cross-env HOME=/tmp node x $HOME', [['inconsistentBehavior', '$HOME', 'darwin,linux']]],
+      [
+        'cross-env HOME=/tmp node x $HOME',
+        [
+          ['inconsistentBehavior', '$HOME', 'darwin,linux'],
+          ['inconsistentBehavior', '$HOME', 'win32'],
+        ],
+      ],
       // The shell expands it in the string before `cross-env-shell` runs the string
       ['cross-env-shell A=1 "echo $A"', [['inconsistentBehavior', '$A', 'darwin,linux']]],
       ['cross-env-shell A=1 echo $A', [['inconsistentBehavior', '$A', 'darwin,linux']]],
       // The shell that `cross-env-shell` starts expands it after it's set
       ["cross-env-shell A=1 'echo $A'", [['inconsistentBehavior', "'echo $A'", 'win32']]],
-      // Escaped, or not set by `cross-env`
-      [String.raw`cross-env A=1 node x \$A $B`, []],
-      // In the values of its other variables
+      // Escaped
+      [String.raw`cross-env A=1 node x \$A $B`, [['inconsistentBehavior', '$B', 'win32']]],
+      // In the values of its other variables, which `cross-env` resolves itself
       ['cross-env A=1 B=$A node x', []],
+      // Not set by `cross-env`, which still replaces it on Windows
+      ['cross-env A=1 node x $FOO', [['inconsistentBehavior', '$FOO', 'win32']]],
+      ['cross-env A=1 $CMD x', [['inconsistentBehavior', '$CMD', 'win32']]],
+      // The shell of `cross-env-shell` expands `%NAME%`
+      ['cross-env-shell A=1 node x $FOO', []],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -1788,13 +2009,20 @@ describe('analyzeScript', () => {
       ).toStrictEqual([]);
     });
 
-    it('explains the report', () => {
-      expect(analyzeScript('cross-env A=1 node x $A')[0]?.data).toStrictEqual({
-        reason:
-          "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
-        suggestion: 'Use the value itself or a Node.js script instead.',
-        syntax: 'The variable `$A`',
-      });
+    it('explains the reports', () => {
+      expect(analyzeScript('cross-env A=1 node x $A').map(({data}) => data)).toStrictEqual([
+        {
+          reason:
+            "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
+          suggestion: 'Use the value itself or a Node.js script instead.',
+          syntax: 'The variable `$A`',
+        },
+        {
+          reason: "`cross-env` replaces it with `%A%`, which isn't expanded without a shell",
+          suggestion: 'Use `cross-env-shell` or a Node.js script instead.',
+          syntax: 'The variable `$A`',
+        },
+      ]);
     });
   });
 
@@ -2254,6 +2482,9 @@ describe('analyzeScript', () => {
       'node a.js <<EOF &\nbody\nEOF\nnode b.js',
       // Not before `)` either, as `}` must follow a line break or `;`
       '(tsc\n)',
+      // cmd.exe would read `a || b && c` as `a || (b && c)`
+      'a || b\nc',
+      'a || b; c',
     ])("doesn't fix %j", (script) => {
       expect(summarizeFixes(script)).toStrictEqual([]);
     });
@@ -2320,7 +2551,23 @@ describe('analyzeScript', () => {
       ["cross-env A=1 jest --testPathPattern='tests/(?!e2e)'", []],
       ["cross-env A=1 prettier --write 'src/**/*.ts'", []],
       ["cross-env A=1 npx eslint 'src/**'", []],
-      ['cross-env-shell "eslint \'src/**\'"', []],
+      // `cross-env-shell` removes them before the shell runs the script, so the string isn't
+      // quoted on any platform
+      [
+        'cross-env-shell "eslint \'src/**\'"',
+        [['inconsistentBehavior', "'src/**'", 'darwin,linux,win32']],
+      ],
+      [
+        "cross-env-shell A=1 \"printf '%s|' 'a b' 'open'\"",
+        [
+          ['unsupportedCommand', 'printf', 'win32'],
+          ['inconsistentBehavior', "'%s|'", 'darwin,linux,win32'],
+          ['inconsistentBehavior', "'a b'", 'darwin,linux,win32'],
+        ],
+      ],
+      // Its words aren't in the script, and whitespace in a string that `echo` prints is harmless
+      ["cross-env-shell A=1 'echo $A'", [['inconsistentBehavior', "'echo $A'", 'win32']]],
+      ['cross-env-shell "echo \'a b\'"', []],
       // cmd.exe splits the string at whitespace and interprets its special characters first
       ["cross-env NODE_OPTIONS='--a --b' jest", [['inconsistentBehavior', "'--a --b'", 'win32']]],
       ["cross-env A=1 node -e 'a&b'", [['inconsistentBehavior', "'a&b'", 'win32']]],
@@ -2364,9 +2611,13 @@ describe('analyzeScript', () => {
 
     it('explains why the quotes break', () => {
       const [issue] = analyzeScript("cross-env A=1 jest 'a b'");
+      const [nestedIssue] = analyzeScript('cross-env-shell "eslint \'src/**\'"');
 
       expect(issue?.data.reason).toBe(
         "cmd.exe doesn't treat single quotes as quotes, so it splits the string before `cross-env` removes them",
+      );
+      expect(nestedIssue?.data.reason).toBe(
+        "`cross-env-shell` removes single quotes before the shell runs the script, so the string isn't quoted",
       );
     });
   });
@@ -2651,8 +2902,17 @@ describe('analyzeScript', () => {
           'cross-env A="\\$A \\`x\\`" node x',
           [['inconsistentBehavior', 'A="\\$A \\`x\\`"', 'win32']],
         ],
-        // Escaped double quotes and backslashes mean the same to Node.js on Windows
-        [String.raw`node x.js \"a\" "b\"c" a\\b`, []],
+        // Escaped double quotes mean the same to Node.js on Windows
+        [String.raw`node x.js \"a\" "b\"c"`, []],
+        // Backslashes too, but only before a `"`
+        [String.raw`node x a\\"b" "c\\" "d\\\"e"`, []],
+        [String.raw`node x a\\b`, [['inconsistentBehavior', String.raw`a\\b`, 'win32']]],
+        [
+          String.raw`jest --testPathIgnorePatterns "\\.e2e\\."`,
+          [['inconsistentBehavior', String.raw`"\\.e2e\\."`, 'win32']],
+        ],
+        // `cross-env` replaces them with one backslash itself
+        [String.raw`cross-env A=1 node x a\\b`, []],
         // Backslashes in Windows paths and regexes are reported as such, or not at all
         [String.raw`del /q dist\*`, [['unsupportedCommand', 'del', 'darwin,linux']]],
         [String.raw`jest --testPathPattern=logging\.spec\.ts`, []],
@@ -2691,6 +2951,22 @@ describe('analyzeScript', () => {
         ['rmdir lib /s/q', [['unsupportedUsage', 'rmdir lib /s/q', 'darwin,linux']]],
         // `&` is meant for cmd.exe in scripts with Windows commands
         ['rd /s /q dist & npm run build', [['unsupportedCommand', 'rd', 'darwin,linux']]],
+        // Not in scripts with other issues on macOS and Linux
+        [
+          'node x $EPOCHSECONDS & node y',
+          [
+            ['unsupportedSyntax', '$EPOCHSECONDS', 'win32'],
+            ['inconsistentBehavior', '$EPOCHSECONDS', 'darwin,linux'],
+            ['inconsistentBehavior', '&', 'win32'],
+          ],
+        ],
+        [
+          'node x\r & node y',
+          [
+            ['inconsistentBehavior', '\r', 'darwin,linux'],
+            ['inconsistentBehavior', '&', 'win32'],
+          ],
+        ],
         ['npm run a & npm run b', [['inconsistentBehavior', '&', 'win32']]],
         [
           "bash -c 'open x' & npm run a",
@@ -2721,10 +2997,8 @@ describe('analyzeScript', () => {
         [String.raw`echo \$HOME`, []],
         ['node x --seed=$RANDOM', []],
         ['npm i mobx@^5', []],
-        [
-          'set NODE_ENV=production&& node x',
-          [['inconsistentBehavior', 'set NODE_ENV=production', 'darwin,linux,win32']],
-        ],
+        // Yarn's shell has no `set`
+        ['set NODE_ENV=production&& node x', [['unsupportedCommand', 'set', 'darwin,linux,win32']]],
         ['[ a == b ] && node x', [['unsupportedCommand', '[', 'win32']]],
         ['rem node build.js', [['unsupportedCommand', 'rem', 'darwin,linux,win32']]],
         [
@@ -2812,14 +3086,26 @@ describe('analyzeScript', () => {
       // Node.js resolves `/tmp` on Windows too
       ['node x /tmp/out', []],
       // `cross-env` behind another command still replaces variables and removes single quotes
-      ['npx cross-env NODE_ENV=production webpack --env mode=$MODE', []],
+      [
+        'npx cross-env NODE_ENV=production webpack --env mode=$MODE',
+        [['inconsistentBehavior', '$MODE', 'win32']],
+      ],
       [
         'npx cross-env NODE_ENV=production webpack --env mode=$NODE_ENV',
-        [['inconsistentBehavior', '$NODE_ENV', 'darwin,linux']],
+        [
+          ['inconsistentBehavior', '$NODE_ENV', 'darwin,linux'],
+          ['inconsistentBehavior', '$NODE_ENV', 'win32'],
+        ],
       ],
       ["pnpm exec cross-env A=1 node x 'ab'", []],
       // But only in the words after it
-      ['npx -p $PKG cross-env A=1 node x $B', [['unsupportedSyntax', '$PKG', 'win32']]],
+      [
+        'npx -p $PKG cross-env A=1 node x $B',
+        [
+          ['unsupportedSyntax', '$PKG', 'win32'],
+          ['inconsistentBehavior', '$B', 'win32'],
+        ],
+      ],
       // cmd.exe runs the operators in single-quoted strings that `echo` prints
       ["echo 'Done & dusted'", [['inconsistentBehavior', "'Done & dusted'", 'win32']]],
       ["echo '==> Building'", [['inconsistentBehavior', "'==> Building'", 'win32']]],
@@ -2956,6 +3242,9 @@ describe('analyzeScript', () => {
           ],
         ],
       ],
+      // With `--glob`, the other paths are patterns too
+      ['rm -rf "dist [old]" *.log', []],
+      ['rm -rf $DIR *.log', []],
       ['env CI=1 jest', [['env', 'Replace `env` with `cross-env`.', 'cross-env CI=1 jest']]],
       [
         'export CI=1 A="b c" && jest',
@@ -2986,6 +3275,13 @@ describe('analyzeScript', () => {
         './scripts/build.mjs --watch',
         [['./scripts/build.mjs', 'Run the file with `node`.', 'node ./scripts/build.mjs --watch']],
       ],
+      // The binary's name may run the binary of another package there
+      ['cd packages/a && ./node_modules/.bin/tsc', []],
+      ['pushd a && ./node_modules/.bin/tsc', []],
+      [
+        'cd a && ./build.js',
+        [['./build.js', 'Run the file with `node`.', 'cd a && node ./build.js']],
+      ],
 
       // Assignments
       [
@@ -3005,15 +3301,44 @@ describe('analyzeScript', () => {
       ],
       // Only a command with nothing but plain assignments before it gets `cross-env`
       ['A=1 2>/dev/null B=2 jest', [['/dev/null', 'Remove `2>/dev/null`.', 'A=1 B=2 jest']]],
-      // `$A` is the outer value either way, as `A=1` comes after it
+      // `$A` is the outer value either way, as `A=1` comes after it. Quotes keep shells from
+      // splitting the values, which they don't do in assignments
       [
         'B=$A A=1 jest',
         [
-          ['B=$A', CROSS_ENV, 'cross-env B=$A A=1 jest'],
-          ['A=1', CROSS_ENV, 'cross-env B=$A A=1 jest'],
+          ['B=$A', CROSS_ENV, 'cross-env B="$A" A=1 jest'],
+          ['A=1', CROSS_ENV, 'cross-env B="$A" A=1 jest'],
         ],
       ],
-      ['PATH=$PATH:bin jest', [['PATH=$PATH:bin', CROSS_ENV, 'cross-env PATH=$PATH:bin jest']]],
+      ['PATH=$PATH:bin jest', [['PATH=$PATH:bin', CROSS_ENV, 'cross-env PATH="$PATH:bin" jest']]],
+      [
+        'A=$(ls src) B=*.js node x',
+        [
+          ['A=$(ls src)', CROSS_ENV, 'cross-env A="$(ls src)" B="*.js" node x'],
+          ['B=*.js', CROSS_ENV, 'cross-env A="$(ls src)" B="*.js" node x'],
+        ],
+      ],
+      [
+        'export A=$B && C=$D jest',
+        [
+          ['export', 'Replace `export ... &&` with `cross-env`.', 'cross-env A="$B" C="$D" jest'],
+          ['C=$D', CROSS_ENV, 'export A=$B && cross-env C="$D" jest'],
+        ],
+      ],
+      // `cross-env` changes these values or words, or shells expand `~` only in assignments
+      ['NODE_ENV=test node -e "console.log(\'hi\')"', []],
+      ['A="\'x\'" node y', []],
+      ['A=\\$B node y', []],
+      ['A=~/x node y', []],
+      ['A=x:~/y node z', []],
+      ['A=1 node x ""', []],
+      [String.raw`A=1 node "a\\\$b"`, []],
+      ['A=$(ls "a") node x', []],
+      ['export NODE_ENV=test && node -e "require(\'./x\')"', []],
+      ['env CI=1 node -e "console.log(\'hi\')"', []],
+      ["env CI='$A' node x", []],
+      // The shell splits the values of `env` the same way
+      ['env CI=$A node x', [['env', 'Replace `env` with `cross-env`.', 'cross-env CI=$A node x']]],
 
       // Quotes and escapes
       [
@@ -3032,6 +3357,10 @@ describe('analyzeScript', () => {
           ],
         ],
       ],
+      // cmd.exe's own commands read `/a.txt` as an option
+      [String.raw`type src\a.txt > out.txt`, []],
+      [String.raw`more src\a.txt`, []],
+      [String.raw`set OUT=dist\app\x.js`, []],
       [
         String.raw`mocha --spec=test\unit\a.js`,
         [
@@ -3065,6 +3394,9 @@ describe('analyzeScript', () => {
         ],
       ],
       ['tsc;', [[';', 'Remove the `;`.', 'tsc']]],
+      // The line break after `\` and a carriage return isn't replaced, as the fix of the carriage
+      // return joins the lines
+      ['tsc \\\r\n--noEmit', [['\r', 'Remove the carriage return.', 'tsc \\\n--noEmit']]],
       // A space keeps the comment apart from the word before it
       [
         'node x;# note',

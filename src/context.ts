@@ -22,13 +22,24 @@ export type Shell = 'bash' | 'native' | 'sh';
  */
 export type SyntaxKind = 'bash' | 'bash4' | 'bashNonPosix' | 'posix';
 
+/**
+ * How `cross-env` gets a piece of the script, whose variables it replaces and whose single quotes
+ * it removes:
+ * - `arguments`: as its arguments, e.g. the variables that it sets
+ * - `command`: as the words of the command that it runs without a shell, which gets `%NAME%` for
+ *   `$NAME` on Windows
+ * - `script`: as the script that `cross-env-shell` runs, which has lost its single quotes before
+ *   the shell runs it
+ */
+type CrossEnvRole = 'arguments' | 'command' | 'script';
+
 export interface Context {
   /** Bash options enabled with `bash -O` or `shopt -s`, e.g. `globstar` */
   bashOptions?: ReadonlySet<string>;
   /** Platforms on which an enclosing piece of the script was already reported */
   covered: ReadonlySet<Platform>;
-  /** Whether `cross-env` runs this piece, which replaces variables and removes single quotes */
-  crossEnv: boolean;
+  /** How `cross-env` gets this piece, if it does */
+  crossEnv: CrossEnvRole | false;
 
   /**
    * Variables that `cross-env` sets for the command that this piece is part of, e.g. `A` for `$A`
