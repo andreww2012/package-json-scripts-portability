@@ -25,6 +25,14 @@ export const DOUBLE_QUOTED_SPECIAL_CHARACTERS = /["$\\`]/;
 
 export const WHITESPACE = /\s/;
 
+/**
+ * Replaces each character of the outer shell's expansions in the scripts that commands run, e.g.
+ * of `$OUT` in `sh -c "tsc > $OUT"`.
+ * Their values aren't known, so words with it aren't static.
+ * It's U+FFFF, which Unicode reserves as a non-character, so scripts don't contain it
+ */
+export const PLACEHOLDER = '\u{FFFF}';
+
 export const GLOB_PART_TYPES: readonly WordPart['type'][] = [
   'BraceExpansion',
   'ExtendedGlob',
@@ -47,7 +55,9 @@ const isStatic = (parts: readonly (DoubleQuotedChild | WordPart)[]): boolean =>
  * @returns The value, or `undefined` if it's dynamic
  */
 export const staticValue = (word: Word) =>
-  word.parts == null || isStatic(word.parts) ? word.value : undefined;
+  (word.parts == null || isStatic(word.parts)) && !word.value.includes(PLACEHOLDER)
+    ? word.value
+    : undefined;
 
 /**
  * Checks whether a word is unquoted text without escapes or expansions, e.g. `dist/*.js`.
@@ -58,10 +68,13 @@ export const staticValue = (word: Word) =>
  */
 export const isPlainWord = (word: Word, partTypes: readonly WordPart['type'][] = []) =>
   !DOUBLE_QUOTED_SPECIAL_CHARACTERS.test(word.text) &&
+  !word.text.includes(PLACEHOLDER) &&
   !TILDE_EXPANSION.test(word.text) &&
   (word.parts || []).every((part) => part.type === 'Literal' || partTypes.includes(part.type));
 
-export const isPlainAssignment = (item: Assignment | Redirection | Word) =>
+export const isPlainAssignment = (
+  item: Assignment | Redirection | Word,
+): item is Assignment & {value: Word} =>
   item.type === 'Assignment' && item.value.type === 'Word' && item.index == null && !item.append;
 
 /**

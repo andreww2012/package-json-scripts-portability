@@ -12,20 +12,34 @@ import type {
   WordPart,
 } from 'unbash';
 import {OS_COMMANDS, PATTERN_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
-import {type Context, type Range, type SyntaxKind, bashLabel, withCovered} from './context.ts';
-import {braceExpansionFix, quoting, replacement} from './fixes.ts';
+import {
+  type Context,
+  type Range,
+  type SyntaxKind,
+  bashLabel,
+  originalText,
+  withCovered,
+} from './context.ts';
+import {backslashPathFix, braceExpansionFix, quoting} from './fixes.ts';
 import {
   BASH_SUGGESTION,
   CROSS_ENV_SUGGESTION,
   CROSS_ENV_VARIABLE_SUGGESTION,
   NODE_SCRIPT_SUGGESTION,
   VARIABLE_SUGGESTION,
+  snippet,
   truncate,
 } from './messages.ts';
-import {PLATFORMS, POSIX_PLATFORMS, type Platform, WINDOWS_PLATFORMS} from './platforms.ts';
+import {
+  MACOS_PLATFORMS,
+  PLATFORMS,
+  POSIX_PLATFORMS,
+  type Platform,
+  WINDOWS_PLATFORMS,
+} from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {TraitsReader} from './runners.ts';
-import {setHas, substringAfterLast, toForwardSlashes} from './utils.ts';
+import {setHas, substringAfterLast} from './utils.ts';
 import {
   DOUBLE_QUOTED_SPECIAL_CHARACTERS,
   GLOB_PART_TYPES,
@@ -41,12 +55,27 @@ interface WordOptions {
   commandName?: boolean;
 
   /**
+   * Whether the word is the value of an assignment that a declaration command receives, e.g. in
+   * `export A={a,b}`, where Bash expands braces in the whole assignment
+   */
+  declaredValue?: boolean;
+
+  /**
+   * Whether the word is analyzed as a nested script, e.g. in `sh -c "..."`, whose analysis checks
+   * the text, e.g. for paths, so that it's not reported twice
+   */
+  nestedScript?: boolean;
+
+  /**
    * Whether `echo` prints the word to the terminal, where the quotes that cmd.exe keeps are
    * harmless
    */
   printedToTerminal?: boolean;
   redirectTarget?: boolean;
+  /** Whether the shell doesn't expand globs and braces in the word, e.g. in a pattern */
   skipGlobs?: boolean;
+  /** Whether the word is text rather than an argument, e.g. a here-string, so it isn't a path */
+  text?: boolean;
 }
 
 interface WordState {
@@ -56,6 +85,7 @@ interface WordState {
   /** Position of the word's first unquoted `*` glob */
   globPosition: number | undefined;
   hasSingleQuotes: boolean;
+  skipGlobs: boolean;
 }
 
 /** Variables that Bash sets, but dash doesn't, by the kind of syntax they are */
@@ -199,6 +229,8 @@ const crossEnvCommands = new WeakMap<Command, boolean>();
  * Checks whether `cross-env` can prefix a command and take over its assignments.
  * It needs a command with only plain assignments before it, and can't run shell builtins, e.g. `cd`
  * in `A=1 cd x`.
+ * Bash would expand braces in the arguments of `cross-env`, e.g. in `A={a,b}`, unlike in
+ * assignments.
  * @param command The command
  * @returns Whether it can
  */
@@ -210,7 +242,11 @@ const canPrefixWithCrossEnv = (command: Command) => {
 
   const canPrefix =
     command.name != null &&
-    command.prefix.every(isPlainAssignment) &&
+    command.prefix.every(
+      (item) =>
+        isPlainAssignment(item) &&
+        !item.value.parts?.some((part) => part.type === 'BraceExpansion'),
+    ) &&
     !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '');
   crossEnvCommands.set(command, canPrefix);
   return canPrefix;
@@ -242,16 +278,11 @@ export class WordChecker {
    * @param command The command that the assignment prefixes, e.g. `jest` in `CI=1 jest`
    */
   checkAssignment(assignment: Assignment, context: Context, command: Command | undefined) {
-    const {append, index, value} = assignment;
-    const isBashSpecific = value.type === 'ArrayValue' || index != null || append;
+    const {value} = assignment;
+    const isBashSpecific = this.#checkBashAssignment(assignment, context);
     const doesPrefixCommand = command != null;
 
-    if (isBashSpecific) {
-      this.#reporter.reportSyntax(context, assignment, 'bash', false, 'unsupportedSyntax', {
-        suggestion: BASH_SUGGESTION,
-        syntax: `The Bash-specific ${index || value.type === 'ArrayValue' ? 'array' : 'appending'} assignment \`${truncate(assignment.text)}\``,
-      });
-    } else {
+    if (!isBashSpecific) {
       this.#reporter.reportSyntax(
         context,
         assignment,
@@ -261,8 +292,8 @@ export class WordChecker {
         {
           suggestion: CROSS_ENV_SUGGESTION,
           syntax: doesPrefixCommand
-            ? `The inline environment variable assignment \`${truncate(assignment.text)}\``
-            : `The shell variable assignment \`${truncate(assignment.text)}\``,
+            ? `The inline environment variable assignment \`${snippet(context, assignment)}\``
+            : `The shell variable assignment \`${snippet(context, assignment)}\``,
         },
         command && canPrefixWithCrossEnv(command)
           ? {
@@ -276,9 +307,48 @@ export class WordChecker {
     // The suggested fix moves the value to `cross-env`, so only report what breaks there too
     const valueContext =
       doesPrefixCommand && !isBashSpecific ? {...context, crossEnv: true} : context;
+    if (value.type === 'ArrayValue') {
+      value.elements.forEach((word) => {
+        this.checkWord(word, valueContext);
+      });
+    } else {
+      // Shells don't expand globs and braces in the value
+      this.checkWord(value, valueContext, {skipGlobs: true});
+    }
+  }
+
+  /**
+   * Checks an assignment that a declaration command receives, e.g. `A=1` in `export A=1`.
+   * @param assignment Assignment to check
+   * @param context Where the assignment is
+   */
+  checkDeclaredAssignment(assignment: Assignment, context: Context) {
+    this.#checkBashAssignment(assignment, context);
+
+    const {value} = assignment;
     (value.type === 'ArrayValue' ? value.elements : [value]).forEach((word) => {
-      this.checkWord(word, valueContext);
+      this.checkWord(word, context, {declaredValue: value.type === 'Word'});
     });
+  }
+
+  /**
+   * Reports an assignment that only Bash supports, e.g. `A+=1` or `A=(1 2)`.
+   * @param assignment Assignment to check
+   * @param context Where the assignment is
+   * @returns Whether it's Bash-specific
+   */
+  #checkBashAssignment(assignment: Assignment, context: Context) {
+    const {append, index, value} = assignment;
+    const isBashSpecific = value.type === 'ArrayValue' || index != null || append;
+
+    if (isBashSpecific) {
+      this.#reporter.reportSyntax(context, assignment, 'bash', false, 'unsupportedSyntax', {
+        suggestion: BASH_SUGGESTION,
+        syntax: `The Bash-specific ${index || value.type === 'ArrayValue' ? 'array' : 'appending'} assignment \`${snippet(context, assignment)}\``,
+      });
+    }
+
+    return isBashSpecific;
   }
 
   #checkBashVariable(name: string, node: Range, context: Context) {
@@ -384,7 +454,13 @@ export class WordChecker {
     );
   }
 
-  #checkEscapes(word: Word, context: Context) {
+  /**
+   * Reports escapes that cmd.exe doesn't remove, e.g. `\$`, and its own escape character `^`.
+   * @param word Word to check
+   * @param context Where the word is
+   * @param shouldCheckCaret Whether to check for `^`, which a nested script checks itself
+   */
+  #checkEscapes(word: Word, context: Context, shouldCheckCaret: boolean) {
     const literals = word.parts
       ? word.parts.flatMap((part) => {
           if (part.type === 'Literal') {
@@ -411,7 +487,10 @@ export class WordChecker {
     }
 
     // cmd.exe's own escape character, e.g. in `npm install mobx@^5`
-    if (literals.some(({pattern, text}) => pattern === UNQUOTED_ESCAPE && text.includes('^'))) {
+    if (
+      shouldCheckCaret &&
+      literals.some(({pattern, text}) => pattern === UNQUOTED_ESCAPE && text.includes('^'))
+    ) {
       this.#reporter.reportSyntax(
         context,
         word,
@@ -421,7 +500,7 @@ export class WordChecker {
         {
           reason: 'cmd.exe treats `^` as an escape character and removes it',
           suggestion: 'Quote it with double quotes instead.',
-          syntax: `The caret in \`${truncate(word.text)}\``,
+          syntax: `The caret in \`${snippet(context, word)}\``,
         },
         isPlainWord(word) ? quoting(word, 'Quote it with escaped double quotes.') : undefined,
       );
@@ -443,7 +522,7 @@ export class WordChecker {
     if (isBashSpecific) {
       covered = this.#reporter.reportSyntax(context, part, bashKind, false, 'unsupportedSyntax', {
         suggestion: NODE_SCRIPT_SUGGESTION,
-        syntax: `The ${bashLabel(bashKind)} parameter expansion \`${truncate(part.text)}\``,
+        syntax: `The ${bashLabel(bashKind)} parameter expansion \`${snippet(context, part)}\``,
       });
     } else if (operation == null && prefix == null && context.crossEnv) {
       covered = this.#checkCrossEnvVariable(part.parameter, part, context);
@@ -464,7 +543,7 @@ export class WordChecker {
           suggestion: context.crossEnv
             ? CROSS_ENV_VARIABLE_SUGGESTION
             : this.#variableSuggestion(part.parameter),
-          syntax: `The variable expansion \`${truncate(part.text)}\``,
+          syntax: `The variable expansion \`${snippet(context, part)}\``,
         },
       );
     }
@@ -502,7 +581,7 @@ export class WordChecker {
       case 'AnsiCQuoted': {
         this.#reporter.reportSyntax(context, part, 'bash', true, 'unsupportedSyntax', {
           suggestion: BASH_SUGGESTION,
-          syntax: `The Bash-specific ANSI-C quoted string \`${truncate(part.text)}\``,
+          syntax: `The Bash-specific ANSI-C quoted string \`${snippet(context, part)}\``,
         });
         break;
       }
@@ -516,7 +595,7 @@ export class WordChecker {
           'unsupportedSyntax',
           {
             suggestion: NODE_SCRIPT_SUGGESTION,
-            syntax: `The arithmetic expansion \`${truncate(part.text)}\``,
+            syntax: `The arithmetic expansion \`${snippet(context, part)}\``,
           },
         );
 
@@ -530,7 +609,7 @@ export class WordChecker {
             'unsupportedSyntax',
             {
               suggestion: NODE_SCRIPT_SUGGESTION,
-              syntax: `The Bash-specific arithmetic in \`${truncate(part.text)}\``,
+              syntax: `The Bash-specific arithmetic in \`${snippet(context, part)}\``,
             },
           );
         }
@@ -551,7 +630,7 @@ export class WordChecker {
           'unsupportedSyntax',
           {
             suggestion: NODE_SCRIPT_SUGGESTION,
-            syntax: `The command substitution \`${truncate(part.text)}\``,
+            syntax: `The command substitution \`${snippet(context, part)}\``,
           },
         );
 
@@ -575,9 +654,11 @@ export class WordChecker {
           part,
           'unsupportedSyntax',
           {
-            suggestion:
-              "It requires Bash's `extglob` option; quote the pattern and let the tool expand it instead.",
-            syntax: `The extended glob \`${truncate(part.text)}\``,
+            // Quoting a pattern that the shell matches, e.g. in `case`, makes it a plain string
+            suggestion: state.skipGlobs
+              ? "It requires Bash's `extglob` option; use a Node.js script instead."
+              : "It requires Bash's `extglob` option; quote the pattern and let the tool expand it instead.",
+            syntax: `The extended glob \`${snippet(context, part)}\``,
           },
           PLATFORMS,
         );
@@ -594,7 +675,7 @@ export class WordChecker {
       case 'LocaleString': {
         this.#reporter.reportSyntax(context, part, 'bash', false, 'unsupportedSyntax', {
           suggestion: BASH_SUGGESTION,
-          syntax: `The Bash-specific locale string \`${truncate(part.text)}\``,
+          syntax: `The Bash-specific locale string \`${snippet(context, part)}\``,
         });
         this.#checkParts(part.parts, context, state);
         break;
@@ -614,7 +695,7 @@ export class WordChecker {
           'unsupportedSyntax',
           {
             suggestion: 'Use a temporary file or a Node.js script instead.',
-            syntax: `The Bash-specific process substitution \`${truncate(part.text)}\``,
+            syntax: `The Bash-specific process substitution \`${snippet(context, part)}\``,
           },
         );
 
@@ -664,7 +745,7 @@ export class WordChecker {
                 ? "cmd.exe doesn't treat single quotes as quotes, so it splits the string before `cross-env` removes them"
                 : "cmd.exe doesn't treat single quotes as quotes, so they're passed on literally",
             suggestion: 'Use escaped double quotes (`\\"`) instead.',
-            syntax: `The single-quoted string \`${truncate(part.text)}\``,
+            syntax: `The single-quoted string \`${snippet(context, part)}\``,
           },
           // cmd.exe's `echo` prints double quotes too, and in double quotes a placeholder like
           // `%LANG%` is reported as a Windows variable
@@ -683,6 +764,29 @@ export class WordChecker {
       default: {
         break;
       }
+    }
+  }
+
+  /**
+   * Reports a brace expansion in the target of a redirection, e.g. in `> out.{log,txt}`.
+   * Bash expands it into several words and fails, while other shells keep the braces.
+   * @param part The brace expansion
+   * @param context Where the redirection is
+   */
+  #checkRedirectionBraces(part: BraceExpansionPart, context: Context) {
+    // It's not known what Yarn's shell does
+    if (!context.portable) {
+      this.#reporter.report(
+        context,
+        part,
+        'inconsistentBehavior',
+        {
+          reason: 'Bash (the `sh` of macOS) expands it into several file names, which is an error',
+          suggestion: 'Use a single file name instead.',
+          syntax: `The brace expansion \`${snippet(context, part)}\` in a redirection`,
+        },
+        context.shell === 'bash' ? PLATFORMS : MACOS_PLATFORMS,
+      );
     }
   }
 
@@ -711,13 +815,17 @@ export class WordChecker {
 
   checkWord(word: Word, context: Context, options: WordOptions = {}) {
     const {text} = word;
+    // Its expansions and quotes are still checked, as the outer shell handles them
+    const shouldCheckText = !options.nestedScript;
 
-    this.#checkCarriageReturn(word, context);
+    if (shouldCheckText) {
+      this.#checkCarriageReturn(word, context);
+    }
 
-    if (TILDE_EXPANSION.test(text)) {
+    if (shouldCheckText && TILDE_EXPANSION.test(text)) {
       this.#reporter.reportSyntax(context, word, 'posix', false, 'unsupportedSyntax', {
         suggestion: 'Use a path relative to the package or a Node.js script instead.',
-        syntax: `The tilde expansion \`${truncate(text)}\``,
+        syntax: `The tilde expansion \`${snippet(context, word)}\``,
       });
     }
 
@@ -727,6 +835,7 @@ export class WordChecker {
       globPosition: undefined,
       hasSingleQuotes: false,
       printedToTerminal: options.printedToTerminal || false,
+      skipGlobs: options.skipGlobs || false,
     };
     if (word.parts) {
       this.#checkParts(word.parts, context, state);
@@ -744,6 +853,7 @@ export class WordChecker {
     // doesn't (e.g. cmd.exe). But a trailing `**` matches the same top-level entries as `*` (and
     // `a**` is just `a*`), so only a `**/` segment is affected
     if (
+      shouldCheckText &&
       hasGlob &&
       !isLiteralPattern &&
       RECURSIVE_GLOB.test(text) &&
@@ -762,7 +872,7 @@ export class WordChecker {
             "`sh` doesn't support recursive `**` globs, and cmd.exe doesn't expand globs at all",
           suggestion:
             'Quote it with escaped double quotes (`\\"`) and let the tool expand it instead.',
-          syntax: `The unquoted glob \`${truncate(text)}\``,
+          syntax: `The unquoted glob \`${snippet(context, word)}\``,
         },
         PLATFORMS,
         // OS utilities don't expand globs themselves
@@ -774,8 +884,17 @@ export class WordChecker {
 
     // When a shell doesn't expand braces, many tools do (as part of their glob syntax), so only
     // report them for OS utilities
-    if (!hasGlob && (options.command == null || OS_COMMANDS.has(options.command))) {
+    if (
+      !hasGlob &&
+      !options.skipGlobs &&
+      (options.command == null || OS_COMMANDS.has(options.command))
+    ) {
       state.braceExpansions.forEach((part) => {
+        if (options.redirectTarget) {
+          this.#checkRedirectionBraces(part, context);
+          return;
+        }
+
         this.#reporter.reportSyntax(
           context,
           part,
@@ -784,9 +903,9 @@ export class WordChecker {
           'unsupportedSyntax',
           {
             suggestion: 'List the alternatives explicitly instead.',
-            syntax: `The Bash-specific brace expansion \`${truncate(part.text)}\``,
+            syntax: `The Bash-specific brace expansion \`${snippet(context, part)}\``,
           },
-          braceExpansionFix(word, part),
+          options.declaredValue ? undefined : braceExpansionFix(word, part),
         );
       });
     }
@@ -800,6 +919,8 @@ export class WordChecker {
     // backslashes are also used for escapes
     if (
       isBackslashPath &&
+      shouldCheckText &&
+      !options.text &&
       !setHas(PATTERN_COMMANDS, options.command) &&
       !state.hasSingleQuotes &&
       (WINDOWS_PATH_PREFIX.test(path) ||
@@ -821,11 +942,7 @@ export class WordChecker {
         // cmd.exe treats `/` as an option prefix in command names and its own commands
         options.commandName || options.redirectTarget || !isTool(options.command)
           ? undefined
-          : replacement(
-              word,
-              text,
-              `${text.slice(0, text.lastIndexOf('=') + 1)}${toForwardSlashes(substringAfterLast(text, '='))}`,
-            ),
+          : backslashPathFix(word, originalText(context, word)),
       );
     }
 
@@ -833,13 +950,18 @@ export class WordChecker {
     const isWindowsPath = isBackslashPath || (hasBackslash && WINDOWS_PATH_PREFIX.test(path));
     // Without backslashes, there are no escapes, so only a caret can be reported
     if (!isWindowsPath && (hasBackslash || text.includes('^'))) {
-      this.#checkEscapes(word, context);
+      this.#checkEscapes(word, context, shouldCheckText);
     }
 
     // In single quotes, it's likely the tool's own placeholder, e.g. in
     // `--bundle-structure '%LANG_ISO%.json'`. Anywhere else, such a placeholder can't be told from
     // a variable, so it's reported too: a known limit
-    if (!state.hasSingleQuotes && options.command !== 'date' && options.command !== 'printf') {
+    if (
+      shouldCheckText &&
+      !state.hasSingleQuotes &&
+      options.command !== 'date' &&
+      options.command !== 'printf'
+    ) {
       const match = WINDOWS_VARIABLE.exec(text);
       // Other `%` signs indicate a format string, e.g. `--pretty=format:%C(bold)%ad%C(reset)`
       if (match && !text.replaceAll(WINDOWS_VARIABLES, '').includes('%')) {
@@ -863,7 +985,7 @@ export class WordChecker {
     const value = staticValue(word);
 
     // Redirection targets are checked with their redirection
-    if (value != null && !options.commandName && !options.redirectTarget) {
+    if (shouldCheckText && value != null && !options.commandName && !options.redirectTarget) {
       this.checkPosixPath(word, value, context);
     }
   }

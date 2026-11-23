@@ -43,6 +43,13 @@ export interface Context {
   fixedRange: Range | undefined;
   /** Offset of `source` in the analyzed script */
   offset: number;
+
+  /**
+   * `source` with the outer shell's expansions instead of their placeholders, e.g. of `$OUT` in
+   * `sh -c "tsc > $OUT"`.
+   * It has the same length, so reports and fixes copy text from it
+   */
+  originalSource: string;
   /** Whether the output of this piece goes into a file or a pipe instead of the terminal */
   outputRedirected?: boolean;
   /** Whether this piece runs in Yarn's portable shell */
@@ -66,6 +73,15 @@ export interface Context {
  */
 export const rangeInScript = (context: Context, node: Range) =>
   context.fixedRange || {end: context.offset + node.end, pos: context.offset + node.pos};
+
+/**
+ * Gets the text of a node as the script has it, e.g. with `$OUT` instead of its placeholder.
+ * @param context The piece of the script that the node is in
+ * @param node The node, with positions relative to the piece's source
+ * @returns The text
+ */
+export const originalText = (context: Context, node: Range) =>
+  context.originalSource.slice(node.pos, node.end);
 
 export const withCovered = (context: Context, platforms: readonly Platform[]) =>
   platforms.every((platform) => context.covered.has(platform))

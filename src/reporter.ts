@@ -8,6 +8,7 @@ import {
 } from './platforms.ts';
 import type {Runner} from './runners.ts';
 import {type OmitStrict, type ReadonlyDeep, arrayIntersection, clamp} from './utils.ts';
+import {PLACEHOLDER} from './words.ts';
 
 export type ScriptIssueMessageId =
   | 'inconsistentBehavior'
@@ -155,13 +156,17 @@ export class Reporter {
       pos: context.offset + pos,
       text,
     }));
-    const isApplicable = edits.every(
-      ({end, pos, text}) =>
-        pos >= 0 &&
-        pos <= end &&
-        end <= this.#length &&
-        context.fixExclusions.every((exclusion) => !exclusion.test(text)),
-    );
+    // A fix that copies a placeholder would insert it instead of the text that it replaces
+    const isApplicable =
+      !fix.description.includes(PLACEHOLDER) &&
+      edits.every(
+        ({end, pos, text}) =>
+          pos >= 0 &&
+          pos <= end &&
+          end <= this.#length &&
+          !text.includes(PLACEHOLDER) &&
+          context.fixExclusions.every((exclusion) => !exclusion.test(text)),
+      );
 
     return isApplicable ? {description: fix.description, edits} : undefined;
   }

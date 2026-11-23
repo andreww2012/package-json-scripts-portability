@@ -1,10 +1,11 @@
 import type {CommandArgument, Redirection, Statement, Word} from 'unbash';
-import {checkCommandUsage} from './command-usage.ts';
+import {type UsageIssue, checkCommandUsage} from './command-usage.ts';
 import {
   CMD_BUILTINS,
   COMMANDS,
   EXEC_SUBCOMMANDS,
   EXEC_VALUE_OPTIONS,
+  OS_COMMANDS,
   PACKAGE_MANAGER_VALUE_OPTIONS,
   PORTABLE_SHELL_BUILTINS,
   SHELL_STATE_COMMANDS,
@@ -23,7 +24,7 @@ import {
 } from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {TraitsReader} from './runners.ts';
-import {arrayDifference, arrayIncludes, setHas, slidingWindow} from './utils.ts';
+import {arrayDifference, arrayIncludes, arrayIntersection, setHas, slidingWindow} from './utils.ts';
 import {
   ASSIGNMENT,
   WHITESPACE,
@@ -64,6 +65,17 @@ const isYarnCommandStart = (source: string, position: number) => {
 
   const previous = source[index - 1];
   return index === 0 || previous === '&' || previous === '|';
+};
+
+/**
+ * Checks whether a command's name is in the wrong case, e.g. `MKDIR` for `mkdir`.
+ * Linux finds commands by their exact name, unlike cmd.exe and macOS (with its default file system)
+ * @param name Name that the command was invoked with
+ * @returns Whether only its lower case is a known OS command
+ */
+const isWrongCase = (name: string) => {
+  const lowerCaseName = name.toLowerCase();
+  return name !== lowerCaseName && !COMMANDS.has(name) && OS_COMMANDS.has(lowerCaseName);
 };
 
 /**
@@ -193,6 +205,49 @@ export interface CommandOptions {
   ignoredCommands: ReadonlySet<string>;
 }
 
+/**
+ * Finds the issues with a command's options and arguments, e.g. `sed -i`.
+ * @param name Name that the command was invoked with
+ * @param argumentWords The words that follow it
+ * @param values Their static values
+ * @param context Where the command is
+ * @returns The issues, which aren't reported yet
+ */
+const findUsageIssues = (
+  name: string,
+  argumentWords: readonly Word[],
+  values: readonly (string | undefined)[],
+  context: Context,
+) => {
+  // A wrapper's options end where the command it runs starts, e.g. `xargs prettier --write`
+  const wrapperValueOptions = WRAPPER_VALUE_OPTIONS.get(name);
+  const commandIndex = wrapperValueOptions ? findCommandIndex(values, 0, wrapperValueOptions) : -1;
+  const separator = values.indexOf('--');
+  const optionsEnd = Math.min(
+    separator === -1 ? values.length : separator,
+    commandIndex === -1 ? values.length : commandIndex,
+  );
+
+  const issues = checkCommandUsage(name, values, argumentWords, {
+    bash: context.shell === 'bash',
+    optionsEnd,
+    portable: context.portable,
+  });
+
+  // A command in the wrong case is missing on Linux too, which is reported along with the other
+  // platforms where it's missing, e.g. for `TIMEOUT 5 node x`
+  return isWrongCase(name)
+    ? issues.map((issue) =>
+        issue.messageId === 'unsupportedCommand'
+          ? {
+              ...issue,
+              platforms: arrayIntersection(PLATFORMS, [...issue.platforms, ...LINUX_PLATFORMS]),
+            }
+          : issue,
+      )
+    : issues;
+};
+
 /** Checks commands, e.g. whether they're available everywhere, and the commands they run */
 export class CommandChecker {
   readonly #analyzeNestedWords: NestedWordsAnalyzer;
@@ -275,11 +330,21 @@ export class CommandChecker {
     }
   }
 
+  /**
+   * Reports a command that isn't available on all platforms.
+   * @param name Name that the command was invoked with
+   * @param nameWord Word that the name comes from
+   * @param argumentWords The words that follow it
+   * @param context Where the command is
+   * @param usageIssues The issues with the command's usage, e.g. on Linux for `TIMEOUT /T 5`
+   * @returns The platforms of the report
+   */
   #checkCommandAvailability(
     name: string,
     nameWord: Word,
     argumentWords: readonly Word[],
     context: Context,
+    usageIssues: readonly UsageIssue[],
   ) {
     if (name === 'del' && this.#options.dependencies.includes('del-cli')) {
       return this.#reporter.report(
@@ -301,23 +366,29 @@ export class CommandChecker {
     }
 
     const lowerCaseName = name.toLowerCase();
-    let info = COMMANDS.get(name);
+    const isNameWrongCase = isWrongCase(name);
+    const info = COMMANDS.get(isNameWrongCase ? lowerCaseName : name);
 
-    // Windows commands are case-insensitive
-    if (!info) {
-      const windowsInfo = COMMANDS.get(lowerCaseName);
-      if (windowsInfo && !windowsInfo.platforms.includes('win32')) {
-        info = windowsInfo;
-      }
-    }
-
-    if (!info) {
+    if (!info && !isNameWrongCase) {
       return [];
     }
 
-    let {platforms} = info;
+    let platforms = info?.platforms || [];
 
-    if (info.bashBuiltin && context.shell === 'bash') {
+    if (isNameWrongCase) {
+      platforms = PLATFORMS.filter(
+        (platform) =>
+          // The usage report tells more, e.g. that `/T` in `TIMEOUT /T 5` is an option of cmd.exe
+          usageIssues.every((issue) => !issue.platforms.includes(platform)) &&
+          (platform === 'linux' ||
+            platforms.includes(platform) ||
+            // Yarn's shell only knows its builtins by their exact names, and Windows has no
+            // executables for them, e.g. for `cd`
+            (platform === 'win32' &&
+              context.portable &&
+              PORTABLE_SHELL_BUILTINS.has(lowerCaseName))),
+      );
+    } else if (info?.bashBuiltin && context.shell === 'bash') {
       platforms = arrayDifference(platforms, LINUX_PLATFORMS);
     }
 
@@ -329,10 +400,18 @@ export class CommandChecker {
       context,
       nameWord,
       'unsupportedCommand',
-      {command: name, suggestion: info.suggestion},
+      {
+        command: name,
+        suggestion: info?.suggestion || `Use \`${lowerCaseName}\` in lower case instead.`,
+      },
       platforms,
       this.#positionalFixes.get(nameWord) ||
-        commandFix(name, nameWord, argumentWords, context.source),
+        commandFix(lowerCaseName, nameWord, argumentWords, context.source) ||
+        // Where the command is everywhere else, the lower-case name runs the same program, apart
+        // from `echo`, which is a builtin of `sh` but an executable on macOS
+        (info || lowerCaseName === 'echo'
+          ? undefined
+          : replacement(nameWord, nameWord.text, lowerCaseName)),
     );
   }
 
@@ -378,6 +457,7 @@ export class CommandChecker {
     }
 
     const firstIssue = this.#reporter.issues.length;
+    const usageIssues = findUsageIssues(name, argumentWords, values, context);
     const covered: Platform[] = [];
 
     if (SHELL_SCRIPT.test(name)) {
@@ -432,10 +512,12 @@ export class CommandChecker {
         );
       }
     } else {
-      covered.push(...this.#checkCommandAvailability(name, nameWord, argumentWords, context));
+      covered.push(
+        ...this.#checkCommandAvailability(name, nameWord, argumentWords, context, usageIssues),
+      );
     }
 
-    covered.push(...this.#checkUsage(name, nameWord, argumentWords, values, context));
+    covered.push(...this.#reportUsage(usageIssues, nameWord, argumentWords, context));
     this.#reporter.markFailures(firstIssue);
 
     // The commands that it runs aren't reported on the platforms where it's reported already
@@ -443,29 +525,13 @@ export class CommandChecker {
     return result;
   }
 
-  #checkUsage(
-    name: string,
+  #reportUsage(
+    issues: readonly UsageIssue[],
     nameWord: Word,
     argumentWords: readonly Word[],
-    values: readonly (string | undefined)[],
     context: Context,
   ) {
-    // A wrapper's options end where the command it runs starts, e.g. `xargs prettier --write`
-    const wrapperValueOptions = WRAPPER_VALUE_OPTIONS.get(name);
-    const commandIndex = wrapperValueOptions
-      ? findCommandIndex(values, 0, wrapperValueOptions)
-      : -1;
-    const separator = values.indexOf('--');
-    const optionsEnd = Math.min(
-      separator === -1 ? values.length : separator,
-      commandIndex === -1 ? values.length : commandIndex,
-    );
-
-    return checkCommandUsage(name, values, argumentWords, {
-      bash: context.shell === 'bash',
-      optionsEnd,
-      portable: context.portable,
-    }).flatMap(({argumentIndex, data, fix, messageId, platforms}) => {
+    return issues.flatMap(({argumentIndex, data, fix, messageId, platforms}) => {
       const fixedWord = fix && argumentWords[fix.argumentIndex];
       return this.#reporter.report(
         context,
@@ -500,7 +566,9 @@ export class CommandChecker {
         : this.checkInvocation(
             word,
             argumentWords.slice(index + 1),
-            nestedContext,
+            // The command starts it, not Yarn's shell, so the shell's builtins aren't available,
+            // e.g. `sleep` in `cross-env A=1 sleep 1`
+            nestedContext.portable ? {...nestedContext, portable: false} : nestedContext,
             depth + 1,
             isCrossSpawned,
           );
@@ -545,12 +613,20 @@ export class CommandChecker {
       return index === -1 ? -1 : index + 1;
     };
     // `-c`/`--shell-mode` of pnpm and aube, after which the command and its arguments are a shell
-    // line
-    const shellModeIndex = (start: number, valueOptions: readonly string[]) => {
+    // line. pnpm also takes it before its subcommand and in clusters, e.g. in `pnpm -rc exec`
+    const shellModeIndex = (
+      optionsStart: number,
+      start: number,
+      valueOptions: readonly string[],
+    ) => {
       const commandIndex = findCommandIndex(values, start, valueOptions);
       return values
-        .slice(start, commandIndex === -1 ? values.length : commandIndex)
-        .some((value) => setHas(SHELL_MODE_OPTIONS, value))
+        .slice(optionsStart, commandIndex === -1 ? values.length : commandIndex)
+        .some(
+          (value) =>
+            setHas(SHELL_MODE_OPTIONS, value) ||
+            (name === 'pnpm' && isShortOptionCluster(value, 'c')),
+        )
         ? commandIndex
         : -1;
     };
@@ -633,7 +709,11 @@ export class CommandChecker {
             return undefined;
           }
         } else if (name === 'aube' || name === 'pnpm') {
-          const shellLine = shellModeIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
+          const shellLine = shellModeIndex(
+            name === 'pnpm' ? 0 : subcommand + 1,
+            subcommand + 1,
+            EXEC_VALUE_OPTIONS,
+          );
           if (shellLine !== -1) {
             nestedShellLine(shellLine);
             return undefined;
@@ -655,7 +735,7 @@ export class CommandChecker {
 
       case 'aubx':
       case 'pnpx': {
-        const shellLine = shellModeIndex(0, valueOptions || []);
+        const shellLine = shellModeIndex(0, 0, valueOptions || []);
         if (shellLine !== -1) {
           nestedShellLine(shellLine);
           return undefined;

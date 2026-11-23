@@ -1,6 +1,6 @@
 import {PLATFORMS} from './platforms.ts';
 import type {RunnerIssue, ScriptIssue} from './reporter.ts';
-import {PACKAGE_MANAGER_RUNNERS, type Runner, isRunnerAgnosticScript} from './runners.ts';
+import {PACKAGE_MANAGER_RUNNERS, RUNNERS, type Runner, isRunnerAgnosticScript} from './runners.ts';
 import {analyzeWithRunners} from './script-analyzer.ts';
 import {type MaybeReadonlyArray, arrayIntersection, arrayify, isEqual} from './utils.ts';
 
@@ -35,6 +35,7 @@ export interface AnalyzeScriptOptions {
 }
 
 const DEFAULT_RUNNERS: readonly Runner[] = ['npm'];
+const KNOWN_RUNNERS: ReadonlySet<Runner> = new Set(RUNNERS);
 
 /** A script that only consists of comment lines, i.e. documentation rather than a script */
 const COMMENT_LINES = /^\s*#[^\n]*(?:\n\s*#[^\n]*)*$/;
@@ -89,9 +90,10 @@ export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}
     return [];
   }
 
+  // Unknown runners are ignored, as the functions that format platforms and runners do
   const runners = isRunnerAgnosticScript(options.scriptName, options.runnerAgnosticScripts)
     ? PACKAGE_MANAGER_RUNNERS
-    : arrayify(options.runner);
+    : arrayify(options.runner).filter((runner) => KNOWN_RUNNERS.has(runner));
   return mergeIssues(
     analyzeWithRunners(script, options, runners.length > 0 ? runners : DEFAULT_RUNNERS),
   );

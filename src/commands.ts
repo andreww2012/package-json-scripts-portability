@@ -442,6 +442,7 @@ export const OS_COMMANDS: ReadonlySet<string> = new Set([
   ...COMMANDS.keys(),
   'cd',
   'echo',
+  'exit',
   'mkdir',
   'rmdir',
   'sort',

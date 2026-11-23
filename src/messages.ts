@@ -1,3 +1,4 @@
+import {type Context, type Range, originalText} from './context.ts';
 import {truncate as truncateText} from './utils.ts';
 
 // Suggestions that several reports share
@@ -29,6 +30,14 @@ const WHITESPACE = /\s+/g;
  */
 export const truncate = (text: string) =>
   truncateText(text.replaceAll(WHITESPACE, ' '), {length: MAX_SNIPPET_CHARACTERS});
+
+/**
+ * Gets the text of a node for a report message, as the script has it.
+ * @param context The piece of the script that the node is in
+ * @param node The node
+ * @returns The shortened text
+ */
+export const snippet = (context: Context, node: Range) => truncate(originalText(context, node));
 
 /**
  * Describes a fix that replaces script text, e.g. "Replace `rm -rf` with `rimraf`.".

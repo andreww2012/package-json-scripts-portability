@@ -157,6 +157,7 @@ Whatever runs the scripts, the commands that package managers run are checked to
 
 Pass several runners to report what breaks with any of them, e.g. `runner: ['npm', 'pnpm']`.
 Each issue lists the runners that have it in `runners`, and is on the platforms where any of them has it.
+Unknown runners are ignored, and without known ones the scripts are checked as npm runs them.
 
 ### Runner-agnostic scripts
 

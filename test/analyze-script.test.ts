@@ -256,13 +256,8 @@ describe('analyzeScript', () => {
           ['unsupportedUsage', 'ln -sr', 'darwin'],
         ],
       ],
-      [
-        'base64 -w 0 file',
-        [
-          ['unsupportedCommand', 'base64', 'win32'],
-          ['unsupportedUsage', 'base64 -w', 'darwin'],
-        ],
-      ],
+      // macOS 15+ accepts `-w` too
+      ['base64 -w 0 file', [['unsupportedCommand', 'base64', 'win32']]],
       ['sort -u file', [['unsupportedUsage', 'sort -u', 'win32']]],
       ['timeout /t 5', [['unsupportedUsage', 'timeout /t', 'darwin,linux']]],
       ['set -e && node x', [['unsupportedUsage', 'set -e', 'win32']]],
@@ -304,6 +299,10 @@ describe('analyzeScript', () => {
       ['echo -x', []],
       ['timeout 10s node x', [['unsupportedCommand', 'timeout', 'darwin,win32']]],
       ['TIMEOUT /T 5', [['unsupportedUsage', 'TIMEOUT /T', 'darwin,linux']]],
+      ['timeout /nobreak /t 10', [['unsupportedUsage', 'timeout /nobreak', 'darwin,linux']]],
+      ['TIMEOUT /NOBREAK /T 10', [['unsupportedUsage', 'TIMEOUT /NOBREAK', 'darwin,linux']]],
+      ['exit /b 1', [['unsupportedUsage', 'exit /b', 'darwin,linux']]],
+      ['exit 1', []],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -386,6 +385,15 @@ describe('analyzeScript', () => {
         [['inconsistentBehavior', '(cd packages/a && npm test)', 'win32']],
       ],
       ['npm test && (cd packages/a && npm test)', []],
+      // A redirection isn't a command that follows
+      ['(cd packages/a && npm test) > log', []],
+      [
+        '(cd packages/a && npm test) > log && npm run b',
+        [['inconsistentBehavior', '(cd packages/a && npm test)', 'win32']],
+      ],
+      ['(tsc;)', [['unsupportedSyntax', ';', 'win32']]],
+      // Not the `function` keyword
+      ['function_a() { tsc; }', [['unsupportedSyntax', 'function_a', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -440,6 +448,19 @@ describe('analyzeScript', () => {
         ],
       ],
       ['eslint @(src|test)', [['unsupportedSyntax', '@(src|test)', 'darwin,linux,win32']]],
+      [
+        'sh -c "case $x in @(a|b)) echo 1;; esac"',
+        [
+          ['unsupportedCommand', 'sh', 'win32'],
+          ['unsupportedSyntax', '@(a|b)', 'darwin,linux'],
+        ],
+      ],
+      [
+        "bash -O extglob -c 'case $x in @(a|b)) echo 1;; esac'",
+        [['unsupportedCommand', 'bash', 'win32']],
+      ],
+      // Patterns rather than file globs
+      ['case $x in *.js|a|[ab]*) echo 1;; esac', [['unsupportedSyntax', 'case', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -734,6 +755,11 @@ describe('analyzeScript', () => {
       ['pnpm exec -c "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
       ['pnpm dlx --shell-mode "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
       ['aubx -c rm -rf tmp', [['unsupportedCommand', 'rm -rf tmp', 'win32']]],
+      // pnpm also takes it before `exec`, and in clusters
+      ['pnpm -c exec "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['pnpm -rc exec "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['pnpm --filter app --shell-mode exec "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['pnpm -r exec -cr "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -762,6 +788,18 @@ describe('analyzeScript', () => {
       ],
       // Commands like `concurrently` run their arguments with the system shell
       ['concurrently "NODE_ENV=dev vite"', [['unsupportedSyntax', 'NODE_ENV=dev', 'win32']]],
+      // Commands that other commands start don't run in Yarn's shell, e.g. its builtins
+      ['cross-env A=1 sleep 5', [['unsupportedCommand', 'sleep', 'win32']]],
+      ['npx mkdir -p dist', [['unsupportedUsage', 'mkdir -p', 'win32']]],
+      ['cross-env A=1 del dist', [['unsupportedCommand', 'del', 'darwin,linux']]],
+      // Yarn's shell doesn't support comments
+      [
+        '{ node x # c\n}',
+        [
+          ['unsupportedSyntax', '# c', 'darwin,linux,win32'],
+          ['unsupportedSyntax', '\n', 'darwin,linux,win32'],
+        ],
+      ],
     ])('%s', (script, expected) => {
       expect(summarize(script, yarn)).toStrictEqual(expected);
     });
@@ -812,7 +850,7 @@ describe('analyzeScript', () => {
       ],
       ['$CMD --flag', [['unsupportedSyntax', '$CMD', 'win32']]],
       ['"$npm_execpath" run build', [['unsupportedSyntax', '$npm_execpath', 'win32']]],
-      ['Rm -rf x', []],
+      ['Rm -rf x', [['unsupportedCommand', 'Rm', 'linux,win32']]],
       ['DEL x', [['unsupportedCommand', 'DEL', 'darwin,linux']]],
       ['echo 😀 && rm x', [['unsupportedCommand', 'rm', 'win32']]],
       [
@@ -919,6 +957,243 @@ describe('analyzeScript', () => {
     });
   });
 
+  // The outer shell expands them, so their values aren't known to the nested script
+  describe('expansions of the outer shell in nested scripts', () => {
+    it.each<[string, Summary[]]>([
+      ['sh -c ". $FILE"', [['unsupportedCommand', 'sh', 'win32']]],
+      [
+        'concurrently "node_modules/.bin/$TOOL --watch" "tsc -w"',
+        [['unsupportedSyntax', '$TOOL', 'win32']],
+      ],
+      [
+        String.raw`concurrently "tool $DIR\src\file.js --watch"`,
+        [['unsupportedSyntax', '$DIR', 'win32']],
+      ],
+      ['npx -c "node_modules/.bin/$TOOL --watch"', [['unsupportedSyntax', '$TOOL', 'win32']]],
+    ])('are reported like expansions in %j', (script, expected) => {
+      expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    it.each<[string, FixSummary[]]>([
+      [
+        'sh -c "node x.js &> $OUT"',
+        [['&> $OUT', 'Replace `&> $OUT` with `> $OUT 2>&1`.', 'sh -c "node x.js > $OUT 2>&1"']],
+      ],
+      ['sh -c "cp $SRC/{a,b} dist"', []],
+      ['sh -c "source $FILE"', []],
+      ['concurrently "node_modules/.bin/$TOOL --watch" "tsc -w"', []],
+      [String.raw`concurrently "tool $DIR\src\file.js --watch"`, []],
+      ['concurrently "A=$X node y"', [['A=$X', CROSS_ENV, 'concurrently "cross-env A=$X node y"']]],
+      [
+        String.raw`concurrently "mocha --$X=test\unit\a.js"`,
+        [
+          [
+            String.raw`--$X=test\unit\a.js`,
+            String.raw`Replace ${'`'}--$X=test\unit\a.js${'`'} with ${'`'}--$X=test/unit/a.js${'`'}.`,
+            'concurrently "mocha --$X=test/unit/a.js"',
+          ],
+        ],
+      ],
+    ])("doesn't insert placeholders in the fixes of %j", (script, expected) => {
+      expect(summarizeFixes(script)).toStrictEqual(expected);
+    });
+
+    it.each<[string, string]>([
+      ['concurrently "A=$X node y"', 'The inline environment variable assignment `A=$X`'],
+      [`concurrently "grep '$P' f"`, "The single-quoted string `'$P'`"],
+      ['sh -c "eslint $D/**/*.ts"', 'The unquoted glob `$D/**/*.ts`'],
+      ['concurrently "ls ~/$D"', 'The tilde expansion `~/$D`'],
+      ['concurrently "npm i a@^$V"', 'The caret in `a@^$V`'],
+      ['concurrently "f$X() { a; }; f"', 'The shell function definition `f$X()`'],
+      ['concurrently "cp {a,$B} c"', 'The Bash-specific brace expansion `{a,$B}`'],
+      // With escapes, which make positions in the nested script differ
+      [String.raw`concurrently "echo \"x\" \${A:-$B}"`, 'The variable expansion `${A:-$B}`'],
+      // In backticks with escapes, which have a source of their own
+      [String.raw`concurrently "echo \`cat \\\$c $D/**/*.ts\`"`, 'The unquoted glob `$D/**/*.ts`'],
+    ])('shows the original text in the messages of %j', (script, syntax) => {
+      expect(analyzeScript(script).map((issue) => issue.data.syntax)).toContain(syntax);
+    });
+  });
+
+  // Linux finds commands by their exact name, unlike cmd.exe and macOS
+  describe('names of OS commands in the wrong case', () => {
+    it.each<[string, Summary[]]>([
+      ['MKDIR dist', [['unsupportedCommand', 'MKDIR', 'linux']]],
+      ['ECHO hi', [['unsupportedCommand', 'ECHO', 'linux']]],
+      ['SORT a.txt', [['unsupportedCommand', 'SORT', 'linux']]],
+      ['CD src && node x', [['unsupportedCommand', 'CD', 'linux']]],
+      [
+        'Echo hi && MkDir dist',
+        [
+          ['unsupportedCommand', 'Echo', 'linux'],
+          ['unsupportedCommand', 'MkDir', 'linux'],
+        ],
+      ],
+      ['RM -rf dist', [['unsupportedCommand', 'RM', 'linux,win32']]],
+      ['CAT a', [['unsupportedCommand', 'CAT', 'linux,win32']]],
+      ['EXPORT A=1', [['unsupportedCommand', 'EXPORT', 'linux,win32']]],
+      ['DIR /b', [['unsupportedCommand', 'DIR', 'darwin,linux']]],
+      [
+        'EXIT 0 && Exit 1',
+        [
+          ['unsupportedCommand', 'EXIT', 'linux'],
+          ['unsupportedCommand', 'Exit', 'linux'],
+        ],
+      ],
+      ['tsc || EXIT 0', [['unsupportedCommand', 'EXIT', 'linux']]],
+      ['EXIT /B 1', [['unsupportedUsage', 'EXIT /B', 'darwin,linux']]],
+      // Not OS commands
+      ['Xvfb :99 && R x && TSC', []],
+      // Their usage tells more
+      ['TIMEOUT /T 5', [['unsupportedUsage', 'TIMEOUT /T', 'darwin,linux']]],
+      ['RMDIR /Q dist', [['unsupportedUsage', 'RMDIR /Q', 'darwin,linux']]],
+      ['TIMEOUT 5 node x', [['unsupportedCommand', 'TIMEOUT', 'darwin,linux,win32']]],
+      [
+        'MKDIR -p dist',
+        [
+          ['unsupportedCommand', 'MKDIR', 'linux'],
+          ['unsupportedUsage', 'MKDIR -p', 'win32'],
+        ],
+      ],
+    ])('%j', (script, expected) => {
+      expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    // Its builtins only have their exact names, and Windows has no executables for them
+    it.each<[string, Summary[]]>([
+      ['ECHO hi', [['unsupportedCommand', 'ECHO', 'linux,win32']]],
+      ['CD src', [['unsupportedCommand', 'CD', 'linux,win32']]],
+      ['SLEEP 1', [['unsupportedCommand', 'SLEEP', 'linux,win32']]],
+      ['EXIT 0', [['unsupportedCommand', 'EXIT', 'linux,win32']]],
+      // It can't run cmd.exe's `mkdir` either
+      ['MKDIR dist', [['unsupportedCommand', 'MKDIR', 'linux,win32']]],
+      ['DIR', [['unsupportedCommand', 'DIR', 'darwin,linux,win32']]],
+    ])("%j in Yarn's shell", (script, expected) => {
+      expect(summarize(script, yarn)).toStrictEqual(expected);
+    });
+
+    it.each<[string, FixSummary[]]>([
+      ['RM -rf dist', [['RM', 'Replace `RM -rf` with `rimraf`.', 'rimraf dist']]],
+      ['MKDIR dist', [['MKDIR', 'Replace `MKDIR` with `mkdir`.', 'mkdir dist']]],
+      ['CD src && node x', [['CD', 'Replace `CD` with `cd`.', 'cd src && node x']]],
+      ['tsc || EXIT 0', [['EXIT', 'Replace `EXIT` with `exit`.', 'tsc || exit 0']]],
+      // POSIX shells fail with `/b` in lower case too
+      ['EXIT /B 1', []],
+      // `echo` is a builtin of `sh`, but an executable on macOS, and `cat` isn't on Windows
+      ['ECHO hi', []],
+      ['CAT a', []],
+      ['DIR /b', []],
+    ])('fixes %j', (script, expected) => {
+      expect(summarizeFixes(script)).toStrictEqual(expected);
+    });
+
+    it('suggests the lower case', () => {
+      expect(analyzeScript('MKDIR dist')[0]?.data.suggestion).toBe(
+        'Use `mkdir` in lower case instead.',
+      );
+    });
+  });
+
+  // The nested script is reported instead of the word that contains it
+  describe('words of nested scripts', () => {
+    const backslashPath = String.raw`--spec=test\unit\a.js`;
+
+    it.each([
+      `concurrently "mocha ${backslashPath}"`,
+      `concurrently 'mocha ${backslashPath}'`,
+      `sh -c "mocha ${backslashPath}"`,
+      `bash -c 'mocha ${backslashPath}'`,
+      `npx -c "mocha ${backslashPath}"`,
+      `cross-env-shell "mocha ${backslashPath}"`,
+      `pnpm exec -c "mocha ${backslashPath}"`,
+    ])('reports a backslash path once in %j', (script) => {
+      expect(
+        summarize(script).filter(([messageId]) => messageId !== 'unsupportedCommand'),
+      ).toContainEqual(['inconsistentBehavior', backslashPath, 'darwin,linux']);
+      expect(
+        analyzeScript(script).filter((issue) => issue.data.reason?.includes('backslashes')),
+      ).toHaveLength(1);
+    });
+
+    it.each<[string, Summary[]]>([
+      ['concurrently "echo %AB%"', [['unsupportedSyntax', '%AB%', 'darwin,linux']]],
+      [
+        'concurrently "node x --out=/dev/null"',
+        [['unsupportedSyntax', '--out=/dev/null', 'win32']],
+      ],
+      // Not a nested script, or one that can't be parsed
+      [
+        `concurrently "${backslashPath}"`,
+        [['inconsistentBehavior', `"${backslashPath}"`, 'darwin,linux']],
+      ],
+      [
+        `concurrently "a 'b ${backslashPath}"`,
+        [['inconsistentBehavior', `"a 'b ${backslashPath}"`, 'darwin,linux']],
+      ],
+    ])('%j', (script, expected) => {
+      expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    // Joined words are reported as a whole, so each word keeps its own report
+    it.each<[string, Summary[], AnalyzeScriptOptions?]>([
+      [
+        'cross-env-shell ls ~/x',
+        [
+          ['unsupportedCommand', 'ls ~/x', 'win32'],
+          ['unsupportedSyntax', '~/x', 'win32'],
+        ],
+      ],
+      ['cross-env-shell A=1 echo %AB%', [['unsupportedSyntax', '%AB%', 'darwin,linux']]],
+      [
+        'cross-env-shell A=1 cat /dev/null',
+        [
+          ['unsupportedCommand', 'cat /dev/null', 'win32'],
+          ['unsupportedSyntax', '/dev/null', 'win32'],
+        ],
+      ],
+      ['pnpm exec -c npm i a@^5', [['inconsistentBehavior', 'a@^5', 'win32']]],
+      [
+        'cross-env-shell A=1 tool src/**/*.js',
+        [['inconsistentBehavior', 'src/**/*.js', 'darwin,linux,win32']],
+      ],
+      ['cross-env-shell tsc\r x', [['inconsistentBehavior', '\r', 'darwin,linux']]],
+      // The quoted word isn't checked for a tilde expansion, so the joined script keeps it
+      [
+        'cross-env-shell A=1 "ls ~/x" ~/y',
+        [
+          ['unsupportedCommand', '"ls ~/x" ~/y', 'win32'],
+          ['unsupportedSyntax', '"ls ~/x" ~/y', 'win32'],
+          ['unsupportedSyntax', '~/y', 'win32'],
+        ],
+      ],
+      // The word's report covers more platforms in Yarn's shell
+      [
+        'cross-env-shell ls ~/x',
+        [
+          ['unsupportedCommand', 'ls ~/x', 'win32'],
+          ['unsupportedSyntax', '~/x', 'darwin,linux,win32'],
+        ],
+        yarn,
+      ],
+    ])('reports %j once in joined words', (script, expected, options) => {
+      expect(summarize(script, options)).toStrictEqual(expected);
+    });
+
+    it.each<[string, FixSummary[]]>([
+      [
+        'pnpm exec -c npm i a@^5',
+        [['a@^5', 'Quote it with escaped double quotes.', 'pnpm exec -c npm i "a@^5"']],
+      ],
+      [
+        'cross-env-shell A=1 tool src/**/*.js',
+        [['src/**/*.js', QUOTE, 'cross-env-shell A=1 tool "src/**/*.js"']],
+      ],
+      ['cross-env-shell tsc\r x', [['\r', 'Remove the carriage return.', 'cross-env-shell tsc x']]],
+    ])('keeps the fixes of the words in %j', (script, expected) => {
+      expect(summarizeFixes(script)).toStrictEqual(expected);
+    });
+  });
+
   describe('platforms covered by an enclosing report', () => {
     it.each<[string, Summary[]]>([
       [
@@ -985,6 +1260,27 @@ describe('analyzeScript', () => {
       ],
       ['node x > out-$(date +%s).log', [['unsupportedSyntax', '$(date +%s)', 'win32']]],
       ['node x > ~/log', [['unsupportedSyntax', '~/log', 'win32']]],
+      // A here-string is text rather than a file
+      ['node x <<< /dev/null', [['unsupportedSyntax', '<<< /dev/null', 'linux,win32']]],
+      ['node x <<< nul', [['unsupportedSyntax', '<<< nul', 'linux,win32']]],
+      [
+        String.raw`node x <<< src\a.js`,
+        [['unsupportedSyntax', String.raw`<<< src\a.js`, 'linux,win32']],
+      ],
+      [
+        'node x <<< $A',
+        [
+          ['unsupportedSyntax', '<<< $A', 'linux,win32'],
+          ['unsupportedSyntax', '$A', 'win32'],
+        ],
+      ],
+      [
+        'node x <<< %AB%',
+        [
+          ['unsupportedSyntax', '<<< %AB%', 'linux,win32'],
+          ['unsupportedSyntax', '%AB%', 'darwin,linux'],
+        ],
+      ],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -1027,6 +1323,28 @@ describe('analyzeScript', () => {
         ],
       ],
       ['node x NODE_ENV=production', []],
+      // Arguments of declaration commands
+      [
+        'export A=(1 2)',
+        [
+          ['unsupportedCommand', 'export', 'win32'],
+          ['unsupportedSyntax', 'A=(1 2)', 'linux,win32'],
+        ],
+      ],
+      [
+        'export A+=1',
+        [
+          ['unsupportedCommand', 'export', 'win32'],
+          ['unsupportedSyntax', 'A+=1', 'linux,win32'],
+        ],
+      ],
+      [
+        'readonly A[0]=1',
+        [
+          ['unsupportedCommand', 'readonly', 'win32'],
+          ['unsupportedSyntax', 'A[0]=1', 'linux,win32'],
+        ],
+      ],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -1064,6 +1382,36 @@ describe('analyzeScript', () => {
         ],
       ],
       ['echo {a,b}', [['unsupportedSyntax', '{a,b}', 'linux,win32']]],
+      // Shells don't expand braces in assignments, `case` words and here-strings
+      ['FOO={a,b} node x.js', [['unsupportedSyntax', 'FOO={a,b}', 'win32']]],
+      ['case {a,b} in a) node x;; esac', [['unsupportedSyntax', 'case', 'win32']]],
+      ['node x <<< {a,b}', [['unsupportedSyntax', '<<< {a,b}', 'linux,win32']]],
+      // But they do in arrays and the arguments of declaration commands
+      [
+        'x=({a,b})',
+        [
+          ['unsupportedSyntax', 'x=({a,b})', 'linux,win32'],
+          ['unsupportedSyntax', '{a,b}', 'linux,win32'],
+        ],
+      ],
+      [
+        'export A={a,b}',
+        [
+          ['unsupportedCommand', 'export', 'win32'],
+          ['unsupportedSyntax', '{a,b}', 'linux,win32'],
+        ],
+      ],
+      // Bash expands them in a redirection and fails, other shells keep them
+      ['node x.js > out.{log,txt}', [['inconsistentBehavior', '{log,txt}', 'darwin']]],
+      [
+        'bash -c "node x.js > out.{log,txt}"',
+        [
+          ['unsupportedCommand', 'bash', 'win32'],
+          ['inconsistentBehavior', '{log,txt}', 'darwin,linux'],
+        ],
+      ],
+      // Nor globs in assignments
+      ['A=src/**/*.js jest', [['unsupportedSyntax', 'A=src/**/*.js', 'win32']]],
       [
         'for f in {a,b}; do node $f; done',
         [
@@ -1166,6 +1514,8 @@ describe('analyzeScript', () => {
         'declare -a x=(1 $(pwd))',
         [
           ['unsupportedCommand', 'declare', 'linux,win32'],
+          // dash fails to parse the whole script
+          ['unsupportedSyntax', 'x=(1 $(pwd))', 'linux,win32'],
           ['unsupportedSyntax', '$(pwd)', 'win32'],
         ],
       ],
@@ -1521,6 +1871,18 @@ describe('analyzeScript', () => {
       expect(summarizeRunners(script, {runner})).toStrictEqual(expected);
     });
 
+    it('ignores unknown runners, e.g. from JavaScript', () => {
+      // eslint-disable-next-line un/no-type-assertion -- Not a runner
+      const unknown = 'bogus' as Runner;
+
+      expect(summarizeRunners('rm -rf dist', {runner: [unknown]})).toStrictEqual([
+        ['unsupportedCommand', 'rm', 'win32', 'npm'],
+      ]);
+      expect(summarizeRunners('rm -rf dist', {runner: [unknown, 'pnpm']})).toStrictEqual([
+        ['unsupportedCommand', 'rm', 'win32', 'pnpm'],
+      ]);
+    });
+
     it("analyzes pnpm with its shell emulator apart from aube, which doesn't have one", () => {
       expect(
         summarizeRunners('a; b', {runner: ['aube', 'pnpm'], shellEmulator: true}),
@@ -1681,6 +2043,18 @@ describe('analyzeScript', () => {
       ['node x.js \\\n  --watch', [['unsupportedSyntax', '\n', 'win32']]],
       ['node x.js "a\nb"', [['unsupportedSyntax', '\n', 'win32']]],
       ['tsc\n', []],
+      // Before the first command, where cmd.exe has nothing to run
+      ['\ntsc', [['unsupportedSyntax', '\n', 'win32']]],
+      // In a subshell, which isn't complete on the first line
+      ['(\n  tsc\n)', [['unsupportedSyntax', '\n', 'win32']]],
+      ['(tsc\n)', [['unsupportedSyntax', '\n', 'win32']]],
+      [
+        '(node a.js # comment\n)',
+        [
+          ['unsupportedSyntax', '# comment', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
       [
         'node server.js &\nnode client.js',
         [
@@ -1785,6 +2159,8 @@ describe('analyzeScript', () => {
         'node server.js &\nnode client.js',
         [['\n', 'Join the lines.', 'node server.js & node client.js']],
       ],
+      ['\ntsc', [['\n', 'Join the lines.', ' tsc']]],
+      ['(\n  tsc\n)', [['\n', 'Join the lines.', '( tsc\n)']]],
     ])('fixes %j', (script, expected) => {
       expect(summarizeFixes(script)).toStrictEqual(expected);
     });
@@ -1799,6 +2175,8 @@ describe('analyzeScript', () => {
       'node x.js <<EOF\nhello\nEOF\necho done',
       'node a.js <<EOF |\nbody\nEOF\nnode b.js',
       'node a.js <<EOF &\nbody\nEOF\nnode b.js',
+      // Not before `)` either, as `}` must follow a line break or `;`
+      '(tsc\n)',
     ])("doesn't fix %j", (script) => {
       expect(summarizeFixes(script)).toStrictEqual([]);
     });
@@ -2351,6 +2729,8 @@ describe('analyzeScript', () => {
           ['unsupportedUsage', 'dir /b', 'linux'],
         ],
       ],
+      // Linux finds commands by their exact name
+      ['DIR /b', [['unsupportedCommand', 'DIR', 'darwin,linux']]],
       ['wget https://example.com', [['unsupportedCommand', 'wget', 'darwin,win32']]],
       // Node.js resolves `/tmp` on Windows too
       ['node x /tmp/out', []],
@@ -2611,6 +2991,12 @@ describe('analyzeScript', () => {
           ['# Done', 'Remove the comment.', 'tsc'],
         ],
       ],
+      // A comment ends at the line feed, so it includes the carriage return
+      ['tsc # c\r\nvite build', [['# c\r', 'Remove the comment.', 'tsc\nvite build']]],
+      ['(tsc;)', [[';', 'Remove the `;`.', '(tsc)']]],
+      ['(node a.js # c\n)', [['# c', 'Remove the comment.', '(node a.js\n)']]],
+      // The `\` line continuation is removed instead of the line break after the comment
+      ['a \\\n# c\nb', [['# c', 'Remove the comment.', 'a\nb']]],
       [
         'mkdir -p dist/{esm,cjs}',
         [
@@ -2661,6 +3047,20 @@ describe('analyzeScript', () => {
       ['a 2&>log', [['&>log', 'Replace `&>log` with `> log 2>&1`.', 'a 2 > log 2>&1']]],
       ['tsc > /dev/null 2>&1', [['/dev/null', 'Remove `> /dev/null`.', 'tsc 2>&1']]],
       ['>/dev/null tsc', [['/dev/null', 'Remove `>/dev/null`.', 'tsc']]],
+      [
+        'tsc \\\n> /dev/null',
+        [
+          ['\n', 'Join the lines.', 'tsc > /dev/null'],
+          ['/dev/null', 'Remove `> /dev/null`.', 'tsc'],
+        ],
+      ],
+      [
+        'tsc \\\n> /dev/null\nvite build',
+        [
+          ['\n', 'Join the lines.', 'tsc > /dev/null\nvite build'],
+          ['/dev/null', 'Remove `> /dev/null`.', 'tsc\nvite build'],
+        ],
+      ],
 
       // Usage
       ['. env.sh', [['. env.sh', 'Replace `env.sh` with `./env.sh`.', '. ./env.sh']]],
@@ -2740,6 +3140,13 @@ describe('analyzeScript', () => {
       'grep -v ^$ log',
       // Positions in escaped nested scripts can't be mapped
       String.raw`sh -c "echo \"\$(a |& b)\""`,
+      // Shells don't expand braces there, unlike in the arguments of `cross-env`
+      'FOO={a,b} node x.js',
+      'node x.js > out.{log,txt}',
+      'case {a,b} in a) node x;; esac',
+      'node x <<< {a,b}',
+      // Bash expands the whole assignment, e.g. to `A=a A=b`
+      'export A={a,b}',
     ])('%j', (script) => {
       expect(summarizeFixes(script)).toStrictEqual([]);
     });

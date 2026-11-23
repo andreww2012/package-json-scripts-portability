@@ -1,6 +1,7 @@
 // cspell:ignore wordlist
 import {
   type AndOr,
+  type BraceGroup,
   type Command,
   type CompoundList,
   type DoubleQuotedChild,
@@ -9,6 +10,7 @@ import {
   type PipelineNode,
   type Script,
   type Statement,
+  type Subshell,
   type TestExpression,
   type Word,
   type WordPart,
@@ -27,10 +29,11 @@ import {
   type Range,
   type SyntaxKind,
   bashLabel,
+  originalText,
   rangeInScript,
   withCovered,
 } from './context.ts';
-import {lineBreakFix, removal, semicolonFix} from './fixes.ts';
+import {joinLinesFix, lineBreakFix, removal, semicolonFix} from './fixes.ts';
 import {LineBreakChecker} from './line-break-checker.ts';
 import {
   BASH_4_SUGGESTION,
@@ -45,22 +48,23 @@ import {Reporter, type RunnerIssue} from './reporter.ts';
 import {type Runner, TraitsReader, runnerTraits} from './runners.ts';
 import {
   arrayIsSubset,
+  mapGetOrInsert,
   mapGetOrInsertComputed,
   sortedArrayInsertionIndex,
   substringBefore,
 } from './utils.ts';
 import {CMD_STATEMENTS, WordChecker} from './word-checker.ts';
-import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, WHITESPACE, staticValue} from './words.ts';
+import {DOUBLE_QUOTED_SPECIAL_CHARACTERS, PLACEHOLDER, WHITESPACE, staticValue} from './words.ts';
 
-/** A `#` comment after a word boundary */
-const COMMENT = /(?:^|[\s&;|])(#.*)/;
-const COMMENTS = new RegExp(COMMENT, 'g');
+/** `#` comments after a word boundary, which end at the line feed, not at a carriage return */
+const COMMENTS = /(?:^|[\s&;|])(#[^\n]*)/g;
 /** Globs of script names that `concurrently` expands, e.g. `npm run watch:*(!css)` */
 const SCRIPT_GLOBS = /((?:bun|npm|pnpm|yarn) run|node --run|deno task) (\S*\*\S*)/g;
 /** `shopt -s globstar`, which makes `**` recursive in the following commands */
 const SHOPT_GLOBSTAR = /\bshopt\s+-s\s+(?:\w+\s+)*globstar\b/;
 /** The rest of a script that only closes subshells */ // cspell:disable-line
 const CLOSING_PARENTHESES = /^[\s)]*$/;
+const ONE_LINE_SUGGESTION = 'Put the commands on one line instead.';
 const WINDOWS_BATCH_SYNTAX =
   /\bif\s+(?:\/i\s+)?(?:not\s+)?(?:defined|errorlevel|exist)\b|\bfor\s+(?:\/[a-z]\s+)*%%?[a-z]\b/gi;
 const SINGLE_QUOTE = /'/;
@@ -118,9 +122,13 @@ const doesChangeShellState = (node: AndOr | PipelineNode): boolean => {
  * The outer shell's expansions are replaced by placeholders of the same length.
  * Their results aren't known, and they're reported for the outer script already.
  * @param parts The word's parts
- * @returns The text, with placeholders
+ * @param shouldKeepExpansions Whether to keep the expansions' text instead, e.g. for reports
+ * @returns The text
  */
-const nestedSource = (parts: readonly (DoubleQuotedChild | WordPart)[]): string =>
+const nestedSource = (
+  parts: readonly (DoubleQuotedChild | WordPart)[],
+  shouldKeepExpansions = false,
+): string =>
   parts
     .map((part) => {
       switch (part.type) {
@@ -132,14 +140,42 @@ const nestedSource = (parts: readonly (DoubleQuotedChild | WordPart)[]): string 
         }
         case 'DoubleQuoted':
         case 'LocaleString': {
-          return nestedSource(part.parts);
+          return nestedSource(part.parts, shouldKeepExpansions);
         }
         default: {
-          return '_'.repeat(part.text.length);
+          return shouldKeepExpansions ? part.text : PLACEHOLDER.repeat(part.text.length);
         }
       }
     })
     .join('');
+
+/**
+ * Gets the original text of a script nested in a piece with placeholders, when it has a source of
+ * its own, e.g. in backticks, which is the piece's text without some backslashes.
+ * @param source The nested script's source
+ * @param text The piece's text, with placeholders
+ * @param original The piece's original text
+ * @returns The nested script's source with the original text instead of placeholders
+ */
+const originalNestedSource = (source: string, text: string, original: string) => {
+  let result = '';
+  let index = 0;
+
+  // The source is the text without some characters, so each of its characters is the next one
+  // in the text that is the same
+  for (let textIndex = 0; textIndex < text.length && index < source.length; textIndex++) {
+    if (text[textIndex] !== source[index]) {
+      continue;
+    }
+    result += original[textIndex];
+    index++;
+  }
+
+  return result + source.slice(index);
+};
+
+/** Gets what identifies the message of an issue, e.g. to find the same issue elsewhere */
+const issueDataKey = (issue: RunnerIssue) => JSON.stringify([issue.messageId, issue.data]);
 
 /**
  * Looks for a run of `||` alternatives that each break on some platform, but together work on all
@@ -180,6 +216,14 @@ class ScriptAnalyzer {
   /** How many scripts the analyzed source is nested in, e.g. 1 in `sh -c "..."` */
   #depth = 0;
   readonly #lineBreaks: LineBreakChecker;
+  /** Words analyzed as nested scripts, e.g. in `sh -c "..."`, whose text that analysis checks */
+  #nestedScriptWords: WeakSet<Word> | undefined;
+
+  /**
+   * Issues of the scripts joined from several words of the command being walked, e.g. in
+   * `cross-env-shell ls ~/x`, which are reported on all of the words
+   */
+  #joinedScriptIssues: RunnerIssue[] | undefined;
   /** Parsed sources of the script and of the scripts nested in it, e.g. in `sh -c "..."` */
   readonly #parsedScripts: Map<string, ParsedScript>;
   readonly #redirections: RedirectionChecker;
@@ -217,13 +261,18 @@ class ScriptAnalyzer {
     return this.#reporter.uniqueIssues;
   }
 
+  /**
+   * Analyzes a script or a piece of it that is a script of its own, e.g. in `sh -c "..."`.
+   * @param context The piece
+   * @returns Whether it was parsed and analyzed, unlike one that isn't a valid POSIX script
+   */
   analyzeSource(context: Context) {
     const script = mapGetOrInsertComputed(this.#parsedScripts, context.source, parse);
 
     if (script.errors?.length) {
       // The script is probably not meant for a POSIX shell, so only look for cmd.exe syntax
       this.#checkWindowsBatchSyntax(context);
-      return;
+      return false;
     }
 
     this.#commands.addPositionalFixes(script.commands, context.source);
@@ -233,8 +282,13 @@ class ScriptAnalyzer {
       ? {...context, bashOptions: new Set([...(context.bashOptions || []), 'globstar'])}
       : context;
 
-    this.#walkStatements(script.commands, script.end, scriptContext);
-    this.#checkComments(script.commands, scriptContext);
+    this.#walkStatements(
+      script.commands,
+      {end: context.source.length, pos: 0},
+      scriptContext,
+      'script',
+    );
+    return true;
   }
 
   #analyzeNestedWords(
@@ -253,10 +307,11 @@ class ScriptAnalyzer {
       return maskScriptGlobs
         ? source.replaceAll(
             SCRIPT_GLOBS,
-            (_, command: string, glob: string) => `${command} ${'_'.repeat(glob.length)}`,
+            (_, command: string, glob: string) => `${command} ${PLACEHOLDER.repeat(glob.length)}`,
           )
         : source;
     });
+    const source = sources.join(' ');
     const [word] = words;
     if (!word) {
       return;
@@ -288,60 +343,126 @@ class ScriptAnalyzer {
       });
     }
 
+    const firstIssue = this.#reporter.issues.length;
     this.#depth++;
-    this.analyzeSource({
+    const isAnalyzed = this.analyzeSource({
       bashOptions,
       covered: context.covered,
       crossEnv,
       fixExclusions: [...context.fixExclusions, exclusion],
       fixedRange,
       offset,
+      originalSource: source.includes(PLACEHOLDER)
+        ? words
+            .map((nested) => (nested.parts ? nestedSource(nested.parts, true) : nested.value))
+            .join(' ')
+        : source,
       portable: false,
       runnerScript: false,
       shell,
-      source: sources.join(' '),
+      source,
     });
     this.#depth--;
+
+    // Joined words are reported as a whole, so each of them is still checked, e.g. for its exact
+    // position and fixes
+    if (isAnalyzed && words.length === 1) {
+      (this.#nestedScriptWords ||= new WeakSet()).add(word);
+    } else if (words.length > 1 && this.#reporter.issues.length > firstIssue) {
+      (this.#joinedScriptIssues ||= []).push(...this.#reporter.issues.slice(firstIssue));
+    }
   }
 
-  #checkComments(statements: readonly Statement[], context: Context) {
-    // `unbash` skips comments, so look for a `#` at a word boundary outside of all statements
-    let position = 0;
+  /**
+   * Sets the issues collected for the command being walked.
+   * @param issues The issues to collect into from now on
+   * @returns The issues collected so far
+   */
+  #swapJoinedScriptIssues(issues: RunnerIssue[] | undefined) {
+    const collected = this.#joinedScriptIssues;
+    this.#joinedScriptIssues = issues;
+    return collected;
+  }
 
-    [...statements, undefined].forEach((statement, index) => {
-      // Not `||`: the first statement can start at 0
-      const end = statement?.pos ?? context.source.length;
-      const gap = context.source.slice(position, end);
+  /**
+   * Removes the platforms of the issues of a script joined from several words on which a word
+   * itself has the same issue, which is reported at its exact position, e.g. `~/x` in
+   * `cross-env-shell ls ~/x`.
+   * @param joinedIssues Issues of the joined script
+   * @param wordIssues Issues of the words, among others
+   * @param start Index of the first issue that may be updated
+   */
+  #dropJoinedDuplicates(
+    joinedIssues: readonly RunnerIssue[],
+    wordIssues: readonly RunnerIssue[],
+    start: number,
+  ) {
+    const wordIssuesByKey = new Map<string, RunnerIssue[]>();
+    wordIssues.forEach((issue) => {
+      mapGetOrInsert(wordIssuesByKey, issueDataKey(issue), []).push(issue);
+    });
 
-      // Most gaps have no comments, and `matchAll` is much slower than this check
-      if (gap.includes('#')) {
-        gap.matchAll(COMMENTS).forEach((match) => {
-          const [text, comment = ''] = match;
-          const start = position + match.index + text.length - comment.length;
-          const commentEnd = start + comment.length;
-          this.#reporter.reportSyntax(
-            context,
-            {end: commentEnd, pos: start},
-            'posix',
-            false,
-            'unsupportedSyntax',
-            {suggestion: 'Remove it instead.', syntax: 'The `#` comment'},
-            {
-              description: 'Remove the comment.',
-              edits: [removal(context.source, start, commentEnd)],
-            },
-          );
-        });
+    // Issues of the same script share their range, so each kind of them is matched once
+    const platformsByKey = new Map<string, ReadonlySet<Platform>>();
+    const removedPlatforms = new Map<RunnerIssue, ReadonlySet<Platform>>();
+    joinedIssues.forEach((joined) => {
+      const key = issueDataKey(joined);
+      const platforms = mapGetOrInsertComputed(
+        platformsByKey,
+        `${key} ${joined.pos} ${joined.end}`,
+        () =>
+          new Set(
+            (wordIssuesByKey.get(key) || [])
+              .filter((issue) => joined.pos <= issue.pos && issue.end <= joined.end)
+              .flatMap((issue) => issue.platforms),
+          ),
+      );
+      if (platforms.size > 0) {
+        removedPlatforms.set(joined, platforms);
+      }
+    });
+
+    if (removedPlatforms.size > 0) {
+      this.#reporter.removePlatforms(start, (issue) => removedPlatforms.get(issue));
+    }
+  }
+
+  /**
+   * Reports the comments in text between statements, which `unbash` skips.
+   * @param gap The text
+   * @param position Where the text starts in the source
+   * @param context Where the text is
+   * @returns Where the first comment starts in the text, or -1 if there is none
+   */
+  #checkComments(gap: string, position: number, context: Context) {
+    // Most gaps have no comments, and `matchAll` is much slower than this check
+    if (!gap.includes('#')) {
+      return -1;
+    }
+
+    let first = -1;
+    gap.matchAll(COMMENTS).forEach((match) => {
+      const [text, comment = ''] = match;
+      const start = match.index + text.length - comment.length;
+      const commentEnd = position + start + comment.length;
+      if (first === -1) {
+        first = start;
       }
 
-      position = statement
-        ? this.#statementEnd(
-            statement,
-            statements.at(index + 1)?.pos || context.source.length,
-            context.source,
-          )
-        : end;
+      this.#reporter.reportSyntax(
+        context,
+        {end: commentEnd, pos: position + start},
+        'posix',
+        false,
+        'unsupportedSyntax',
+        {suggestion: 'Remove it instead.', syntax: 'The `#` comment'},
+        {
+          description: 'Remove the comment.',
+          edits: [removal(context.source, position + start, commentEnd)],
+        },
+      );
     });
+    return first;
   }
 
   /**
@@ -448,7 +569,14 @@ class ScriptAnalyzer {
     }
   }
 
-  #walkCommand(node: AndOr | PipelineNode, context: Context) {
+  /**
+   * Walks a command and the commands in it.
+   * @param node The command
+   * @param context Where the command is
+   * @param commandEnd Where the command ends along with its redirections, e.g. `> log` after
+   * `( ... )`
+   */
+  #walkCommand(node: AndOr | PipelineNode, context: Context, commandEnd = node.end) {
     switch (node.type) {
       case 'AndOr': {
         const starts: number[] = [];
@@ -500,14 +628,19 @@ class ScriptAnalyzer {
               }
             : undefined,
         );
-        this.#walkList(node.body, withCovered(context, covered));
+        this.#walkGroup(node, withCovered(context, covered));
         break;
       }
 
       case 'Case': {
         const nestedContext = this.#reportStatement(context, node, 'case', 'posix');
-        this.#words.checkWord(node.word, nestedContext);
-        node.items.forEach(({body, end, terminator}) => {
+        // The word and the patterns aren't expanded like arguments, and a pattern like `*.js` isn't
+        // a file glob
+        this.#words.checkWord(node.word, nestedContext, {skipGlobs: true});
+        node.items.forEach(({body, end, pattern, terminator}) => {
+          pattern.forEach((word) => {
+            this.#words.checkWord(word, nestedContext, {skipGlobs: true});
+          });
           this.#walkList(body, nestedContext);
           if (terminator === ';&' || terminator === ';;&') {
             this.#reporter.reportSyntax(
@@ -551,7 +684,8 @@ class ScriptAnalyzer {
       }
 
       case 'Function': {
-        const hasFunctionKeyword = context.source.startsWith('function', node.pos);
+        // e.g. `function a { ... }`, but not `function_a() { ... }`
+        const hasFunctionKeyword = node.name.pos > node.pos;
         const covered = this.#reporter.reportSyntax(
           context,
           {end: node.name.end, pos: node.pos},
@@ -565,7 +699,7 @@ class ScriptAnalyzer {
               }
             : {
                 suggestion: NODE_SCRIPT_SUGGESTION,
-                syntax: `The shell function definition \`${node.name.text}()\``,
+                syntax: `The shell function definition \`${originalText(context, node.name)}()\``,
               },
         );
 
@@ -601,6 +735,7 @@ class ScriptAnalyzer {
         this.#walkCommand(
           node.command,
           node.redirects.some(doesRedirectOutput) ? {...context, outputRedirected: true} : context,
+          commandEnd,
         );
         node.redirects.forEach((redirection) => {
           this.#redirections.checkRedirection(redirection, context);
@@ -621,7 +756,7 @@ class ScriptAnalyzer {
         if (
           !context.portable &&
           node.body.commands.some((statement) => doesChangeDirectory(statement.command)) &&
-          !CLOSING_PARENTHESES.test(context.source.slice(node.end))
+          !CLOSING_PARENTHESES.test(context.source.slice(commandEnd))
         ) {
           this.#reporter.reportSyntax(context, node, 'posix', true, 'inconsistentBehavior', {
             reason:
@@ -630,7 +765,7 @@ class ScriptAnalyzer {
             syntax: 'The subshell `( ... )`',
           });
         }
-        this.#walkList(node.body, context);
+        this.#walkGroup(node, context);
         break;
       }
 
@@ -661,16 +796,43 @@ class ScriptAnalyzer {
   }
 
   #walkList(list: CompoundList, context: Context) {
-    this.#walkStatements(list.commands, list.end, context);
+    this.#walkStatements(list.commands, list, context);
+  }
+
+  /**
+   * Walks the commands of a group, i.e. `( ... )` or `{ ... }`.
+   * @param node The group
+   * @param context Where the group is
+   */
+  #walkGroup(node: BraceGroup | Subshell, context: Context) {
+    this.#walkStatements(
+      node.body.commands,
+      // Between the parentheses or braces
+      {end: Math.max(node.body.end, node.end - 1), pos: node.pos + 1},
+      context,
+      'group',
+    );
   }
 
   #walkNestedScript(script: Script, part: Range, context: Context) {
     const nestedContext =
       script.source == null
         ? context
-        : {...context, fixedRange: rangeInScript(context, part), source: script.source};
+        : {
+            ...context,
+            fixedRange: rangeInScript(context, part),
+            originalSource:
+              context.originalSource === context.source
+                ? script.source
+                : originalNestedSource(
+                    script.source,
+                    context.source.slice(part.pos, part.end),
+                    originalText(context, part),
+                  ),
+            source: script.source,
+          };
 
-    this.#walkStatements(script.commands, script.end, nestedContext);
+    this.#walkStatements(script.commands, script, nestedContext);
   }
 
   #walkPipeline(node: Pipeline, context: Context) {
@@ -742,6 +904,9 @@ class ScriptAnalyzer {
       }
     });
 
+    // Commands in the scripts that this command runs are walked on their own
+    const enclosingJoinedIssues = this.#swapJoinedScriptIssues(undefined);
+    const invocationStart = this.#reporter.issues.length;
     const invocation =
       node.name &&
       this.#commands.checkInvocation(
@@ -750,6 +915,7 @@ class ScriptAnalyzer {
         context,
         0,
       );
+    const joinedIssues = this.#swapJoinedScriptIssues(enclosingJoinedIssues);
     // Shells and `find` have to be replaced on Windows anyway (e.g. with a Node.js script), so how
     // their arguments are quoted doesn't matter there
     const argumentContext =
@@ -776,15 +942,16 @@ class ScriptAnalyzer {
     this.#lineBreaks.checkCommandLineBreak(node, argumentContext);
 
     const isPrintedToTerminal = invocation?.target === 'echo' && !isOutputUsed;
+    const wordsStart = this.#reporter.issues.length;
 
     node.suffix.forEach((item) => {
       if (item.type === 'Assignment') {
-        (item.value.type === 'Word' ? [item.value] : item.value.elements).forEach((word) => {
-          this.#words.checkWord(word, contextOf(word));
-        });
+        // e.g. `A=1` in `export A=1`
+        this.#words.checkDeclaredAssignment(item, contextOf(item));
       } else if (item.type === 'Word') {
         this.#words.checkWord(item, contextOf(item), {
           command: invocation?.target,
+          nestedScript: this.#nestedScriptWords?.has(item),
           printedToTerminal: isPrintedToTerminal,
         });
       } else {
@@ -792,6 +959,14 @@ class ScriptAnalyzer {
         this.#redirections.checkRedirection(item, context);
       }
     });
+
+    if (joinedIssues) {
+      this.#dropJoinedDuplicates(
+        joinedIssues,
+        this.#reporter.issues.slice(wordsStart),
+        invocationStart,
+      );
+    }
   }
 
   #reportStatement(context: Context, node: Range, keyword: string, kind: SyntaxKind) {
@@ -814,30 +989,63 @@ class ScriptAnalyzer {
     return withCovered(context, covered);
   }
 
-  #walkStatements(statements: readonly Statement[], end: number, context: Context) {
+  /**
+   * Walks a list of statements and checks the text around them, e.g. `;` and comments.
+   * @param statements The statements
+   * @param listRange Where the list is, including the text before the first statement and after
+   * the last one, e.g. up to the closing parenthesis of `( ... )`
+   * @param context Where the list is
+   * @param kind What the list is: a whole script, the body of `( ... )` or `{ ... }` (a group), or
+   * another list, e.g. the body of `if`.
+   * cmd.exe ignores the rest of the script after a line break, which is only harmless after the
+   * last statement of a script
+   */
+  #walkStatements(
+    statements: readonly Statement[],
+    listRange: Range,
+    context: Context,
+    kind: 'group' | 'list' | 'script' = 'list',
+  ) {
     const firstIssue = this.#reporter.issues.length;
     const backgroundOperators: Range[] = [];
+    const {source} = context;
+    const [first] = statements;
+
+    const leadingGap = source.slice(listRange.pos, first?.pos ?? listRange.end);
+    const leadingComment = this.#checkComments(leadingGap, listRange.pos, context);
+    const leadingLineBreak = leadingGap.indexOf('\n');
+    // e.g. in `\ntsc`, where cmd.exe has nothing to run, but not after a comment, which is
+    // reported itself
+    if (
+      first &&
+      kind !== 'list' &&
+      leadingLineBreak !== -1 &&
+      (leadingComment === -1 || leadingComment > leadingLineBreak)
+    ) {
+      const position = listRange.pos + leadingLineBreak;
+      this.#lineBreaks.reportLineBreak(
+        context,
+        position,
+        ONE_LINE_SUGGESTION,
+        joinLinesFix(source, position, first.pos),
+      );
+    }
 
     statements.forEach((statement, index) => {
       this.#walkCommand(statement.command, context);
 
       if (statement.background) {
-        const position = context.source.lastIndexOf('&', statement.end - 1);
+        const position = source.lastIndexOf('&', statement.end - 1);
         backgroundOperators.push({end: position + 1, pos: position});
       }
 
       const next = statements.at(index + 1);
-      const gapEnd = next?.pos || end;
-      const gapStart = this.#statementEnd(statement, gapEnd, context.source);
-      const gap = context.source.slice(gapStart, gapEnd);
+      const gapEnd = next?.pos || listRange.end;
+      const gapStart = this.#statementEnd(statement, gapEnd, source);
+      const gap = source.slice(gapStart, gapEnd);
       // A `;` can't follow a comment, which ends at the end of the line
-      const comment = COMMENT.exec(gap);
-      const commentText = comment?.[1];
-      const commentStart =
-        comment && commentText != null
-          ? comment.index + comment[0].length - commentText.length
-          : undefined;
-      const semicolon = gap.slice(0, commentStart).indexOf(';');
+      const comment = this.#checkComments(gap, gapStart, context);
+      const semicolon = gap.slice(0, comment === -1 ? undefined : comment).indexOf(';');
 
       if (semicolon !== -1) {
         const range = {end: gapStart + semicolon + 1, pos: gapStart + semicolon};
@@ -856,14 +1064,15 @@ class ScriptAnalyzer {
         }
       }
 
-      if (next && gap.includes('\n')) {
+      // e.g. before the closing parenthesis of `( ... )`
+      if ((next || kind === 'group') && gap.includes('\n')) {
         this.#lineBreaks.reportLineBreak(
           context,
           gapStart + gap.indexOf('\n'),
-          statement.background
-            ? 'Put the commands on one line instead.'
-            : 'Join the commands with `&&` instead.',
-          semicolon === -1 ? lineBreakFix(gapStart, gap, statement, next) : undefined,
+          next && !statement.background
+            ? 'Join the commands with `&&` instead.'
+            : ONE_LINE_SUGGESTION,
+          semicolon === -1 && next ? lineBreakFix(gapStart, gap, statement, next) : undefined,
         );
       }
     });
@@ -959,6 +1168,7 @@ export const analyzeWithRunners = (
         fixExclusions: [],
         fixedRange: undefined,
         offset: 0,
+        originalSource: script,
         portable: reader.get('portableShell') || false,
         runnerScript: true,
         shell: 'native',

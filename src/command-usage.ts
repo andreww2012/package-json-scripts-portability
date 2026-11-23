@@ -31,7 +31,7 @@ interface UsageFix {
   text: string;
 }
 
-interface UsageIssue {
+export interface UsageIssue {
   /** The argument that the issue ends at, or `undefined` if it's about the command itself */
   argumentIndex: number | undefined;
   data: Record<string, string>;
@@ -50,7 +50,14 @@ interface UsageOptions {
 }
 
 /** Commands that also exist in cmd.exe, whose names are case-insensitive there */
-const CMD_COMMANDS: ReadonlySet<string> = new Set(['mkdir', 'rmdir', 'set', 'sort', 'timeout']);
+const CMD_COMMANDS: ReadonlySet<string> = new Set([
+  'exit',
+  'mkdir',
+  'rmdir',
+  'set',
+  'sort',
+  'timeout',
+]);
 
 /** Bash's pseudo-signals for `trap`, which dash doesn't support */
 const BASH_TRAP_CONDITIONS: ReadonlySet<string> = new Set(['DEBUG', 'ERR', 'RETURN']);
@@ -89,7 +96,9 @@ const POSIX_OPTION = /^-./;
 const CMD_OPTION = /^\/[a-z]/i;
 /** Including combined switches, e.g. `/s/q` */
 const RMDIR_CMD_OPTION = /^(?:\/[qs])+$/i;
-const TIMEOUT_CMD_OPTION = /^\/t$/i;
+const EXIT_CMD_OPTION = /^\/b$/i;
+/** Options of cmd.exe's `timeout`, which are case-insensitive, e.g. `/T` */
+const TIMEOUT_CMD_OPTION = /^\/(?:nobreak|t)$/i;
 const ECHO_OPTIONS = /^-[Een]+$/;
 const HEAD_COUNT_OPTION = /^-[cn]$/;
 /** e.g. `-n-1` */
@@ -232,14 +241,6 @@ export const checkCommandUsage = (
       break;
     }
 
-    case 'base64': {
-      reportOption((value) => isShortOptionCluster(value, 'w'), MACOS_PLATFORMS, {
-        reason: 'BSD `base64` uses `-b` to wrap lines',
-        suggestion: NODE_SCRIPT_SUGGESTION,
-      });
-      break;
-    }
-
     case 'bash':
     case 'shopt': {
       // `bash -O globstar` and `shopt -s globstar`
@@ -304,6 +305,18 @@ export const checkCommandUsage = (
             : "`sh`'s `echo` on macOS and cmd.exe's `echo` print the option literally",
           suggestion: NODE_SCRIPT_SUGGESTION,
           syntax: `\`echo ${first}\``,
+        });
+      }
+      break;
+    }
+
+    case 'exit': {
+      // POSIX shells fail with a non-numeric status, e.g. in `exit /b 1`
+      const [option = ''] = values;
+      if (EXIT_CMD_OPTION.test(option)) {
+        report(0, POSIX_PLATFORMS, {
+          reason: `\`${option}\` is a cmd.exe option`,
+          suggestion: `Remove \`${option}\` instead.`,
         });
       }
       break;
@@ -532,9 +545,10 @@ export const checkCommandUsage = (
     }
 
     case 'timeout': {
+      // e.g. `timeout /nobreak /t 10`
       if (TIMEOUT_CMD_OPTION.test(values[0] || '')) {
         report(0, POSIX_PLATFORMS, {
-          reason: "`/t` is an option of Windows' `timeout` command",
+          reason: `\`${values[0] || ''}\` is an option of Windows' \`timeout\` command`,
           suggestion: NODE_SCRIPT_SUGGESTION,
         });
       } else {

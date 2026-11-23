@@ -2,10 +2,12 @@ import type {BraceExpansionPart, Statement, Word} from 'unbash';
 import type {Range} from './context.ts';
 import {describeReplacement, truncate} from './messages.ts';
 import type {ScriptEdit, ScriptFix} from './reporter.ts';
+import {toForwardSlashes} from './utils.ts';
 import {ASSIGNMENT, GLOB_PART_TYPES, isPlainWord, staticValue} from './words.ts';
 
 const LINE_WHITESPACE = /[\t ]/;
 const LINE_BREAK = /^\r?\n/;
+const BACKSLASH_CODE_POINT = 92;
 /** Options of `rm` that `rimraf` doesn't need, e.g. `-rf` */
 const RM_OPTION = /^(?:-[Rfr]+|--force|--recursive)$/;
 /** A binary of a dependency, which package managers add to `PATH` */
@@ -32,6 +34,26 @@ export const quoting = (word: Range, description: string): ScriptFix => ({
 });
 
 /**
+ * Finds the `\` line continuation before a line, e.g. in `a \` + line break + `b`.
+ * @param source The script
+ * @param lineStart Where the line starts
+ * @returns Where the `\` is, or -1 if the line doesn't continue the previous one
+ */
+const lineContinuationStart = (source: string, lineStart: number) => {
+  if (source[lineStart - 1] !== '\n') {
+    return -1;
+  }
+
+  const lineEnd = lineStart - (source[lineStart - 2] === '\r' ? 2 : 1);
+  let backslashes = 0;
+  while (source.codePointAt(lineEnd - backslashes - 1) === BACKSLASH_CODE_POINT) {
+    backslashes++;
+  }
+  // An escaped backslash doesn't continue the line, e.g. in `a \\`
+  return backslashes % 2 === 1 ? lineEnd - 1 : -1;
+};
+
+/**
  * Creates an edit that removes a piece of a script, along with the whitespace that separates it.
  * @param source The script
  * @param pos Start offset of the piece
@@ -46,7 +68,15 @@ export const removal = (source: string, pos: number, end: number): ScriptEdit =>
     start--;
   }
 
-  if (start === 0 || source[start - 1] === '\n') {
+  const continuation = lineContinuationStart(source, start);
+  if (continuation !== -1) {
+    // Remove the `\` line continuation before the piece instead, so that the line break after the
+    // piece still ends the line
+    start = continuation;
+    while (start > 0 && LINE_WHITESPACE.test(source.charAt(start - 1))) {
+      start--;
+    }
+  } else if (start === 0 || source[start - 1] === '\n') {
     // Remove the whitespace that follows instead, and the line if it becomes empty
     while (stop < source.length && LINE_WHITESPACE.test(source.charAt(stop))) {
       stop++;
@@ -161,6 +191,21 @@ export const pathCommandFix = (name: string, nameWord: Word): ScriptFix | undefi
         edits: [{end: nameWord.pos, pos: nameWord.pos, text: 'node '}],
       }
     : undefined;
+};
+
+/**
+ * Gets a fix that replaces the backslashes of a Windows path with slashes.
+ * @param word The word with the path, e.g. `--config=configs\app.json`
+ * @param original The word's text as the script has it
+ * @returns The fix, which only replaces the path: the text before it may have placeholders
+ */
+export const backslashPathFix = (word: Word, original: string): ScriptFix => {
+  const start = word.text.lastIndexOf('=') + 1;
+  const path = toForwardSlashes(word.text.slice(start));
+  return {
+    description: describeReplacement(original, `${original.slice(0, start)}${path}`),
+    edits: [{end: word.end, pos: word.pos + start, text: path}],
+  };
 };
 
 /**

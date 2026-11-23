@@ -1,5 +1,5 @@
-import type {Command, RedirectOperator, Redirection} from 'unbash';
-import {type Context, bashLabel} from './context.ts';
+import type {Command, RedirectOperator, Redirection, Word} from 'unbash';
+import {type Context, bashLabel, originalText} from './context.ts';
 import {removal, replacement} from './fixes.ts';
 import {
   BASH_SUGGESTION,
@@ -89,7 +89,7 @@ export class RedirectionChecker {
    * @param isWholeCommand Whether the redirection is the whole command, e.g. `>log` in `tsc | >log`
    */
   checkRedirection(redirection: Redirection, context: Context, isWholeCommand = false) {
-    const text = context.source.slice(redirection.pos, redirection.end);
+    const text = originalText(context, redirection);
 
     switch (redirection.type) {
       case 'HereDoc': {
@@ -128,9 +128,17 @@ export class RedirectionChecker {
           redirection.pos > 0 && !WHITESPACE.test(context.source.charAt(redirection.pos - 1))
             ? ' '
             : '';
-        const redirectionFix = (fixed: string): ScriptFix => ({
-          description: describeReplacement(text, fixed),
-          edits: [{end: redirection.end, pos: redirection.pos, text: `${separator}${fixed}`}],
+        // Writes both outputs to the target, e.g. `> log 2>&1` for `&> log`. The target isn't
+        // copied, as it may have placeholders
+        const bothOutputsFix = (target: Word, fixedOperator: string): ScriptFix => ({
+          description: describeReplacement(
+            text,
+            `${fixedOperator} ${originalText(context, target)} 2>&1`,
+          ),
+          edits: [
+            {end: target.pos, pos: redirection.pos, text: `${separator}${fixedOperator} `},
+            {end: redirection.end, pos: redirection.end, text: ' 2>&1'},
+          ],
         });
 
         if (operator === '&>' || operator === '&>>') {
@@ -145,8 +153,7 @@ export class RedirectionChecker {
               suggestion: `Use \`${operator.slice(1)} file 2>&1\` instead.`,
               syntax: `The ${bashLabel(kind)} \`${operator}\` redirection`,
             },
-            redirection.target &&
-              redirectionFix(`${operator.slice(1)} ${redirection.target.text} 2>&1`),
+            redirection.target && bothOutputsFix(redirection.target, operator.slice(1)),
           );
         } else if (operator === '>|' || operator === '<>') {
           const position = context.source.indexOf(operator, descriptor?.end || redirection.pos);
@@ -184,7 +191,7 @@ export class RedirectionChecker {
                 suggestion: `Use \`> ${truncate(target)} 2>&1\` instead.`,
                 syntax: 'The Bash-specific `>&` redirection to a file',
               },
-              descriptor ? undefined : redirectionFix(`> ${redirection.target.text} 2>&1`),
+              descriptor ? undefined : bothOutputsFix(redirection.target, '>'),
             );
           }
         }
@@ -198,8 +205,10 @@ export class RedirectionChecker {
     }
 
     const target = staticValue(redirection.target);
+    // A here-string is text rather than a file
+    const isHereString = redirection.type === 'HereString';
 
-    if (target != null && WINDOWS_DEVICES.has(target.toLowerCase())) {
+    if (target != null && !isHereString && WINDOWS_DEVICES.has(target.toLowerCase())) {
       this.#reporter.report(
         context,
         redirection.target,
@@ -213,17 +222,21 @@ export class RedirectionChecker {
       );
     }
 
-    this.#words.checkWord(redirection.target, context, {redirectTarget: true});
+    this.#words.checkWord(redirection.target, context, {
+      redirectTarget: true,
+      // Bash doesn't expand braces in a here-string
+      skipGlobs: isHereString,
+      text: isHereString,
+    });
 
     // Yarn's shell supports `/dev/null` on all platforms
-    if (target == null || (target === '/dev/null' && context.portable)) {
+    if (target == null || isHereString || (target === '/dev/null' && context.portable)) {
       return;
     }
 
     // Without the redirection, the output appears in the terminal instead
     const doesDiscardOutput =
       !isWholeCommand &&
-      redirection.type === 'Redirect' &&
       (redirection.operator === '>' || redirection.operator === '>>') &&
       target === '/dev/null';
 
