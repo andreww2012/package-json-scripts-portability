@@ -732,13 +732,12 @@ class ScriptAnalyzer {
       }
 
       case 'Redirected': {
-        this.#walkCommand(
-          node.command,
-          node.redirects.some(doesRedirectOutput) ? {...context, outputRedirected: true} : context,
-          commandEnd,
-        );
+        const redirectedContext = node.redirects.some(doesRedirectOutput)
+          ? {...context, outputRedirected: true}
+          : context;
+        this.#walkCommand(node.command, redirectedContext, commandEnd);
         node.redirects.forEach((redirection) => {
-          this.#redirections.checkRedirection(redirection, context);
+          this.#redirections.checkRedirection(redirection, redirectedContext);
         });
         break;
       }
@@ -895,12 +894,16 @@ class ScriptAnalyzer {
     }
 
     const isRedirection = node.name == null && node.prefix.length + node.suffix.length === 1;
+    const isOutputUsed = context.outputRedirected || node.redirects.some(doesRedirectOutput);
+    // e.g. for `> /dev/null` in `tsc > out.log > /dev/null`
+    const redirectionContext =
+      isOutputUsed && !context.outputRedirected ? {...context, outputRedirected: true} : context;
 
     node.prefix.forEach((item) => {
       if (item.type === 'Assignment') {
         this.#words.checkAssignment(item, context, node.name ? node : undefined);
       } else {
-        this.#redirections.checkRedirection(item, context, isRedirection);
+        this.#redirections.checkRedirection(item, redirectionContext, isRedirection);
       }
     });
 
@@ -922,14 +925,23 @@ class ScriptAnalyzer {
       invocation?.name != null && (SHELLS.includes(invocation.name) || invocation.name === 'find')
         ? withCovered(context, WINDOWS_PLATFORMS)
         : context;
-    const crossEnv = invocation?.crossEnvStart != null && {
+    const crossEnv = invocation?.crossEnv && {
+      ...invocation.crossEnv,
+      // The words of the command that it runs, which the shell expands before it sets its variables
+      commandContext: {
+        ...argumentContext,
+        crossEnv: true,
+        crossEnvVariables: invocation.crossEnv.variables,
+      },
       context: {...argumentContext, crossEnv: true},
-      start: invocation.crossEnvStart,
     };
     // `cross-env` only gets the words after it, e.g. not `$A` in `npx -p $A cross-env B=1 jest`
-    const contextOf = (item: Range) =>
-      crossEnv && item.pos >= crossEnv.start ? crossEnv.context : argumentContext;
-    const isOutputUsed = context.outputRedirected || node.redirects.some(doesRedirectOutput);
+    const contextOf = (item: Range) => {
+      if (!crossEnv || item.pos < crossEnv.start) {
+        return argumentContext;
+      }
+      return item.pos < crossEnv.commandStart ? crossEnv.context : crossEnv.commandContext;
+    };
 
     if (node.name) {
       this.#words.checkWord(node.name, context, {commandName: true});
@@ -956,7 +968,7 @@ class ScriptAnalyzer {
         });
       } else {
         // Redirections are handled by the shell, not the command
-        this.#redirections.checkRedirection(item, context);
+        this.#redirections.checkRedirection(item, redirectionContext);
       }
     });
 

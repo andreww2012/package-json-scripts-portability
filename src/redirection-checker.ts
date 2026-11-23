@@ -27,6 +27,10 @@ const OUTPUT_OPERATORS: ReadonlySet<RedirectOperator> = new Set([
   '>|',
 ]);
 
+/** Checks whether a redirection is of the standard output, e.g. `>` or `1>`, but not `2>` */
+const isOfStandardOutput = ({descriptor}: Redirection) =>
+  descriptor == null || (descriptor.type === 'FileDescriptor' && descriptor.value === 1);
+
 /**
  * Checks whether a redirection writes the standard output to a file, e.g. `> out.log`, but not
  * `>&2`, `2> err.log` or `> /dev/null`.
@@ -38,10 +42,10 @@ export const doesRedirectOutput = (redirection: Redirection) => {
     return false;
   }
 
-  const {descriptor, operator, target} = redirection;
+  const {operator, target} = redirection;
   const value = target && staticValue(target);
   return (
-    (descriptor == null || (descriptor.type === 'FileDescriptor' && descriptor.value === 1)) &&
+    isOfStandardOutput(redirection) &&
     // e.g. `>&2`, which duplicates a file descriptor instead
     !(operator === '>&' && value != null && DESCRIPTOR.test(value)) &&
     // Devices don't keep the output, e.g. `/dev/null`
@@ -234,11 +238,13 @@ export class RedirectionChecker {
       return;
     }
 
-    // Without the redirection, the output appears in the terminal instead
+    // Without the redirection, the output appears in the terminal instead, unless the command's
+    // output goes into a pipe or a file, e.g. in `a > /dev/null | b`
     const doesDiscardOutput =
       !isWholeCommand &&
       (redirection.operator === '>' || redirection.operator === '>>') &&
-      target === '/dev/null';
+      target === '/dev/null' &&
+      !(context.outputRedirected && isOfStandardOutput(redirection));
 
     this.#words.checkPosixPath(
       redirection.target,

@@ -77,6 +77,18 @@ export const isPlainAssignment = (
 ): item is Assignment & {value: Word} =>
   item.type === 'Assignment' && item.value.type === 'Word' && item.index == null && !item.append;
 
+/** A word of letters, digits and underscores, e.g. a variable name */
+const IDENTIFIER = /\w+/g;
+
+/**
+ * Checks whether a piece of a script mentions any of some variables, e.g. `$PORT` for `PORT`.
+ * @param text The piece of the script
+ * @param names Names of the variables
+ * @returns Whether it does, even if only as a word that the shell doesn't expand
+ */
+export const doesMentionVariables = (text: string, names: ReadonlySet<string>) =>
+  (text.match(IDENTIFIER) || []).some((word) => names.has(word));
+
 /**
  * Device paths, e.g. `/dev/null`.
  * Unlike other absolute paths, they are rarely meant for containers or remote hosts

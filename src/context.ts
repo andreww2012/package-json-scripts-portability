@@ -31,6 +31,12 @@ export interface Context {
   crossEnv: boolean;
 
   /**
+   * Variables that `cross-env` sets for the command that this piece is part of, e.g. `A` for `$A`
+   * in `cross-env A=1 node $A`
+   */
+  crossEnvVariables?: ReadonlySet<string>;
+
+  /**
    * Text that fixes can't insert, as it would end or change the string that contains this piece,
    * e.g. `"` in `sh -c "..."`
    */

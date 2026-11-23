@@ -367,6 +367,35 @@ export const COMMANDS: ReadonlyMap<string, CommandInfo> = new Map([
   ),
 ]);
 
+/**
+ * Shell builtins that macOS' `sh` only finds by their exact name, unlike executables: there are no
+ * executables for them, or only ones that run the builtin in a child process, which can't change
+ * the shell's state, e.g. `/usr/bin/cd`
+ */
+export const EXACT_NAME_BUILTINS: ReadonlySet<string> = new Set([
+  ...BASH_BUILTINS.flatMap(([names]) => names),
+  'alias',
+  'bg',
+  'cd',
+  'eval',
+  'exec',
+  'exit',
+  'export',
+  'fg',
+  'getopts',
+  'jobs',
+  'local',
+  'read',
+  'readonly',
+  'return',
+  'shift',
+  'trap',
+  'ulimit',
+  'umask',
+  'unset',
+  'wait',
+]);
+
 /** cmd.exe builtins (rather than executables), which Yarn's portable shell can't run on Windows */
 export const CMD_BUILTINS: ReadonlySet<string> = new Set([
   'assoc',
@@ -474,8 +503,18 @@ export const PACKAGE_MANAGER_VALUE_OPTIONS: readonly string[] = [
   '-F',
 ];
 
+/** Options of npm (before its subcommand) that take a value, unlike pnpm's `-w` */
+export const NPM_VALUE_OPTIONS: readonly string[] = [...PACKAGE_MANAGER_VALUE_OPTIONS, '-w'];
+
 /** Options of package managers' exec subcommands that take a value */
 export const EXEC_VALUE_OPTIONS: readonly string[] = ['--package', '-p'];
+
+/** Options of `npm exec` and `npx` that take a value */
+export const NPM_EXEC_VALUE_OPTIONS: readonly string[] = [
+  ...EXEC_VALUE_OPTIONS,
+  '--workspace',
+  '-w',
+];
 
 /** Options of GNU `timeout` that take a value */
 export const TIMEOUT_VALUE_OPTIONS: readonly string[] = ['--kill-after', '--signal', '-k', '-s'];
@@ -500,7 +539,7 @@ export const WRAPPER_VALUE_OPTIONS: ReadonlyMap<string, readonly string[]> = new
   ['exec', ['-a']],
   ['nice', ['--adjustment', '-n']],
   ['nohup', []],
-  ['npx', EXEC_VALUE_OPTIONS],
+  ['npx', NPM_EXEC_VALUE_OPTIONS],
   ['pnpx', EXEC_VALUE_OPTIONS],
   ['sudo', ['-C', '-D', '-g', '-h', '-p', '-r', '-t', '-U', '-u']],
   ['time', ['-f', '-o']],

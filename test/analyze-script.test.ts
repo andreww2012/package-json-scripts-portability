@@ -64,7 +64,6 @@ describe('analyzeScript', () => {
       'eslint . --max-warnings 0',
       'npm run build -- --watch',
       'cross-env NODE_ENV=production node server.js',
-      'cross-env NODE_ENV=production webpack --env mode=$NODE_ENV',
       'eslint "src/**/*.ts"',
       'prettier --write "**/*.{md,json}"',
       'rimraf dist/*',
@@ -614,6 +613,8 @@ describe('analyzeScript', () => {
     it.each<[string, Summary[]]>([
       ['cross-env NODE_ENV=production rm -rf dist', [['unsupportedCommand', 'rm', 'win32']]],
       ['cross-env-shell "echo $FOO && rm x"', [['unsupportedCommand', 'rm', 'win32']]],
+      // A variable with an expansion in its value isn't the command
+      ['cross-env A=$B rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
       // It joins its arguments into a single script
       ['cross-env-shell npm install x', []],
       ['cross-env-shell rm -rf $DIR', [['unsupportedCommand', 'rm -rf $DIR', 'win32']]],
@@ -760,6 +761,15 @@ describe('analyzeScript', () => {
       ['pnpm -rc exec "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
       ['pnpm --filter app --shell-mode exec "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
       ['pnpm -r exec -cr "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      // npm's `-w` and `--workspace` take a value
+      ['npm exec -w pkg -- rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npm exec --workspace pkg -- rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npm -w pkg exec rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npm x -w pkg rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npx --workspace pkg rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npm exec -w pkg -c "rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      // pnpm's `-w` doesn't
+      ['pnpm -w exec rm -rf x', [['unsupportedCommand', 'rm', 'win32']]],
     ])('%s', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
     });
@@ -1015,13 +1025,15 @@ describe('analyzeScript', () => {
     });
   });
 
-  // Linux finds commands by their exact name, unlike cmd.exe and macOS
+  // Linux finds commands by their exact name, unlike cmd.exe and macOS, where only some shell
+  // builtins need it
   describe('names of OS commands in the wrong case', () => {
     it.each<[string, Summary[]]>([
       ['MKDIR dist', [['unsupportedCommand', 'MKDIR', 'linux']]],
       ['ECHO hi', [['unsupportedCommand', 'ECHO', 'linux']]],
       ['SORT a.txt', [['unsupportedCommand', 'SORT', 'linux']]],
-      ['CD src && node x', [['unsupportedCommand', 'CD', 'linux']]],
+      // macOS' `/usr/bin/cd` changes the directory of a child process
+      ['CD src && node x', [['unsupportedCommand', 'CD', 'darwin,linux']]],
       [
         'Echo hi && MkDir dist',
         [
@@ -1031,16 +1043,28 @@ describe('analyzeScript', () => {
       ],
       ['RM -rf dist', [['unsupportedCommand', 'RM', 'linux,win32']]],
       ['CAT a', [['unsupportedCommand', 'CAT', 'linux,win32']]],
-      ['EXPORT A=1', [['unsupportedCommand', 'EXPORT', 'linux,win32']]],
+      // macOS has no executables for these builtins
+      ['EXPORT A=1', [['unsupportedCommand', 'EXPORT', 'darwin,linux,win32']]],
+      ['PUSHD docs', [['unsupportedCommand', 'PUSHD', 'darwin,linux']]],
       ['DIR /b', [['unsupportedCommand', 'DIR', 'darwin,linux']]],
       [
         'EXIT 0 && Exit 1',
         [
-          ['unsupportedCommand', 'EXIT', 'linux'],
-          ['unsupportedCommand', 'Exit', 'linux'],
+          ['unsupportedCommand', 'EXIT', 'darwin,linux'],
+          ['unsupportedCommand', 'Exit', 'darwin,linux'],
         ],
       ],
-      ['tsc || EXIT 0', [['unsupportedCommand', 'EXIT', 'linux']]],
+      ['tsc || EXIT 0', [['unsupportedCommand', 'EXIT', 'darwin,linux']]],
+      // macOS has executables that work for these
+      [
+        'PWD && TRUE && Test -f x',
+        [
+          ['unsupportedCommand', 'PWD', 'linux,win32'],
+          ['unsupportedCommand', 'TRUE', 'linux,win32'],
+          ['unsupportedCommand', 'Test', 'linux,win32'],
+        ],
+      ],
+      ['COMMAND -v node', [['unsupportedCommand', 'COMMAND', 'linux,win32']]],
       ['EXIT /B 1', [['unsupportedUsage', 'EXIT /B', 'darwin,linux']]],
       // Not OS commands
       ['Xvfb :99 && R x && TSC', []],
@@ -1062,9 +1086,9 @@ describe('analyzeScript', () => {
     // Its builtins only have their exact names, and Windows has no executables for them
     it.each<[string, Summary[]]>([
       ['ECHO hi', [['unsupportedCommand', 'ECHO', 'linux,win32']]],
-      ['CD src', [['unsupportedCommand', 'CD', 'linux,win32']]],
+      ['CD src', [['unsupportedCommand', 'CD', 'darwin,linux,win32']]],
       ['SLEEP 1', [['unsupportedCommand', 'SLEEP', 'linux,win32']]],
-      ['EXIT 0', [['unsupportedCommand', 'EXIT', 'linux,win32']]],
+      ['EXIT 0', [['unsupportedCommand', 'EXIT', 'darwin,linux,win32']]],
       // It can't run cmd.exe's `mkdir` either
       ['MKDIR dist', [['unsupportedCommand', 'MKDIR', 'linux,win32']]],
       ['DIR', [['unsupportedCommand', 'DIR', 'darwin,linux,win32']]],
@@ -1297,6 +1321,13 @@ describe('analyzeScript', () => {
         [
           ['unsupportedSyntax', 'A=1', 'win32'],
           ['unsupportedSyntax', 'B=2', 'win32'],
+        ],
+      ],
+      [
+        'PORT=3000 URL=http://localhost:$PORT node x',
+        [
+          ['unsupportedSyntax', 'PORT=3000', 'win32'],
+          ['unsupportedSyntax', 'URL=http://localhost:$PORT', 'win32'],
         ],
       ],
       [
@@ -1718,6 +1749,52 @@ describe('analyzeScript', () => {
       expect(analyzeScript(script, options).map((issue) => issue.data.suggestion)).toStrictEqual([
         suggestion,
       ]);
+    });
+  });
+
+  // POSIX shells expand them before `cross-env` sets them, while on Windows `cross-env` replaces
+  // them with the new values
+  describe('variables that `cross-env` sets for its command', () => {
+    it.each<[string, Summary[]]>([
+      [
+        'cross-env NODE_ENV=production webpack --env mode=$NODE_ENV',
+        [['inconsistentBehavior', '$NODE_ENV', 'darwin,linux']],
+      ],
+      [
+        'cross-env A=1 B=2 node x ${B} "$A"',
+        [
+          ['inconsistentBehavior', '${B}', 'darwin,linux'],
+          ['inconsistentBehavior', '$A', 'darwin,linux'],
+        ],
+      ],
+      // Windows doesn't set it, but `cross-env` does
+      ['cross-env HOME=/tmp node x $HOME', [['inconsistentBehavior', '$HOME', 'darwin,linux']]],
+      // The shell expands it in the string before `cross-env-shell` runs the string
+      ['cross-env-shell A=1 "echo $A"', [['inconsistentBehavior', '$A', 'darwin,linux']]],
+      ['cross-env-shell A=1 echo $A', [['inconsistentBehavior', '$A', 'darwin,linux']]],
+      // The shell that `cross-env-shell` starts expands it after it's set
+      ["cross-env-shell A=1 'echo $A'", [['inconsistentBehavior', "'echo $A'", 'win32']]],
+      // Escaped, or not set by `cross-env`
+      [String.raw`cross-env A=1 node x \$A $B`, []],
+      // In the values of its other variables
+      ['cross-env A=1 B=$A node x', []],
+    ])('%j', (script, expected) => {
+      expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    it("doesn't report them in Yarn's shell, which expands them itself on all platforms", () => {
+      expect(
+        summarize('cross-env NODE_ENV=production webpack --env mode=$NODE_ENV', yarn),
+      ).toStrictEqual([]);
+    });
+
+    it('explains the report', () => {
+      expect(analyzeScript('cross-env A=1 node x $A')[0]?.data).toStrictEqual({
+        reason:
+          "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
+        suggestion: 'Use the value itself or a Node.js script instead.',
+        syntax: 'The variable `$A`',
+      });
     });
   });
 
@@ -2735,10 +2812,14 @@ describe('analyzeScript', () => {
       // Node.js resolves `/tmp` on Windows too
       ['node x /tmp/out', []],
       // `cross-env` behind another command still replaces variables and removes single quotes
-      ['npx cross-env NODE_ENV=production webpack --env mode=$NODE_ENV', []],
+      ['npx cross-env NODE_ENV=production webpack --env mode=$MODE', []],
+      [
+        'npx cross-env NODE_ENV=production webpack --env mode=$NODE_ENV',
+        [['inconsistentBehavior', '$NODE_ENV', 'darwin,linux']],
+      ],
       ["pnpm exec cross-env A=1 node x 'ab'", []],
       // But only in the words after it
-      ['npx -p $PKG cross-env A=1 node x $A', [['unsupportedSyntax', '$PKG', 'win32']]],
+      ['npx -p $PKG cross-env A=1 node x $B', [['unsupportedSyntax', '$PKG', 'win32']]],
       // cmd.exe runs the operators in single-quoted strings that `echo` prints
       ["echo 'Done & dusted'", [['inconsistentBehavior', "'Done & dusted'", 'win32']]],
       ["echo '==> Building'", [['inconsistentBehavior', "'==> Building'", 'win32']]],
@@ -2808,6 +2889,19 @@ describe('analyzeScript', () => {
       expect(summarize('del dist', {dependencies: ['del-cli']})).toStrictEqual([
         ['inconsistentBehavior', 'del', 'win32'],
       ]);
+    });
+
+    it.each<AnalyzeScriptOptions>([yarn, {runner: 'pnpm', shellEmulator: true}])(
+      "doesn't report del-cli's `del` in Yarn's shell, which can't run cmd.exe's builtins (%j)",
+      (options) => {
+        expect(summarize('del dist', {...options, dependencies: ['del-cli']})).toStrictEqual([]);
+      },
+    );
+
+    it("reports del-cli's `del` that another command starts in Yarn's shell", () => {
+      expect(
+        summarize('cross-env A=1 del dist', {...yarn, dependencies: ['del-cli']}),
+      ).toStrictEqual([['inconsistentBehavior', 'del', 'win32']]);
     });
   });
 
@@ -2911,6 +3005,15 @@ describe('analyzeScript', () => {
       ],
       // Only a command with nothing but plain assignments before it gets `cross-env`
       ['A=1 2>/dev/null B=2 jest', [['/dev/null', 'Remove `2>/dev/null`.', 'A=1 B=2 jest']]],
+      // `$A` is the outer value either way, as `A=1` comes after it
+      [
+        'B=$A A=1 jest',
+        [
+          ['B=$A', CROSS_ENV, 'cross-env B=$A A=1 jest'],
+          ['A=1', CROSS_ENV, 'cross-env B=$A A=1 jest'],
+        ],
+      ],
+      ['PATH=$PATH:bin jest', [['PATH=$PATH:bin', CROSS_ENV, 'cross-env PATH=$PATH:bin jest']]],
 
       // Quotes and escapes
       [
@@ -3048,6 +3151,15 @@ describe('analyzeScript', () => {
       ['tsc > /dev/null 2>&1', [['/dev/null', 'Remove `> /dev/null`.', 'tsc 2>&1']]],
       ['>/dev/null tsc', [['/dev/null', 'Remove `>/dev/null`.', 'tsc']]],
       [
+        'node a.js | node b.js > /dev/null',
+        [['/dev/null', 'Remove `> /dev/null`.', 'node a.js | node b.js']],
+      ],
+      // Only the standard output goes into the pipe
+      [
+        'node a.js 2>/dev/null | node b.js',
+        [['/dev/null', 'Remove `2>/dev/null`.', 'node a.js | node b.js']],
+      ],
+      [
         'tsc \\\n> /dev/null',
         [
           ['\n', 'Join the lines.', 'tsc > /dev/null'],
@@ -3122,11 +3234,20 @@ describe('analyzeScript', () => {
       'tsc < /dev/null',
       // Removing a redirection that is a whole command leaves an incomplete pipeline
       'tsc | 2>/dev/null',
+      // Without the redirection, the output would go into the pipe or the file
+      'node a.js > /dev/null | node b.js',
+      'node a.js 2>&1 >/dev/null | grep x',
+      '(node a.js 1>/dev/null) > out.log',
+      'node a.js > out.log >> /dev/null',
       // A subshell keeps `exit` and variables from affecting the commands that follow
       'test -f x || { echo missing; exit 1; }',
       '{ A=1; } && echo $A',
       // In a subshell, `exec` doesn't replace the shell that runs the commands that follow
       '{ exec node x; } && tsc',
+      // dash sets `PORT` before it expands `$PORT`, but the shell would expand the arguments of
+      // `cross-env` before `cross-env` sets any of them
+      'PORT=3000 URL=http://localhost:$PORT node x',
+      'A=1 A=$A:2 node x',
       // `cross-env` can't run shell builtins
       'A=1 cd x',
       'A=1 B+=2 jest',

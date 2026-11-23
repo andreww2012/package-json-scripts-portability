@@ -1,10 +1,13 @@
-import type {CommandArgument, Redirection, Statement, Word} from 'unbash';
+import type {Statement, Word} from 'unbash';
 import {type UsageIssue, checkCommandUsage} from './command-usage.ts';
 import {
   CMD_BUILTINS,
   COMMANDS,
+  EXACT_NAME_BUILTINS,
   EXEC_SUBCOMMANDS,
   EXEC_VALUE_OPTIONS,
+  NPM_EXEC_VALUE_OPTIONS,
+  NPM_VALUE_OPTIONS,
   OS_COMMANDS,
   PACKAGE_MANAGER_VALUE_OPTIONS,
   PORTABLE_SHELL_BUILTINS,
@@ -24,21 +27,38 @@ import {
 } from './platforms.ts';
 import type {Reporter, ScriptFix} from './reporter.ts';
 import type {TraitsReader} from './runners.ts';
-import {arrayDifference, arrayIncludes, arrayIntersection, setHas, slidingWindow} from './utils.ts';
+import {
+  arrayDifference,
+  arrayIncludes,
+  arrayIntersection,
+  setHas,
+  slidingWindow,
+  substringBefore,
+} from './utils.ts';
 import {
   ASSIGNMENT,
   WHITESPACE,
+  doesMentionVariables,
   isPlainAssignment,
   isShortOptionCluster,
   staticValue,
 } from './words.ts';
 
+interface CrossEnvInvocation {
+  /** Where the command that it runs starts, after the variables that it sets */
+  commandStart: number;
+  /** Where its arguments start */
+  start: number;
+  /** Names of the variables that it sets */
+  variables: ReadonlySet<string>;
+}
+
 interface InvocationResult {
   /**
-   * Where the arguments of `cross-env` start, if it runs the command, also behind another command,
-   * e.g. in `npx cross-env A=1 jest`
+   * The `cross-env` that runs the command, if any, also behind another command, e.g. in
+   * `npx cross-env A=1 jest`
    */
-  crossEnvStart: number | undefined;
+  crossEnv: CrossEnvInvocation | undefined;
   name: string | undefined;
   /** The innermost command that receives the arguments, e.g. `rm` in `cross-env A=1 rm -rf dist` */
   target: string | undefined;
@@ -69,7 +89,8 @@ const isYarnCommandStart = (source: string, position: number) => {
 
 /**
  * Checks whether a command's name is in the wrong case, e.g. `MKDIR` for `mkdir`.
- * Linux finds commands by their exact name, unlike cmd.exe and macOS (with its default file system)
+ * Linux finds commands by their exact name, unlike cmd.exe and macOS (with its default file system),
+ * where only some shell builtins need it, e.g. `exit` on macOS
  * @param name Name that the command was invoked with
  * @returns Whether only its lower case is a known OS command
  */
@@ -77,6 +98,28 @@ const isWrongCase = (name: string) => {
   const lowerCaseName = name.toLowerCase();
   return name !== lowerCaseName && !COMMANDS.has(name) && OS_COMMANDS.has(lowerCaseName);
 };
+
+/**
+ * Gets the text of a `cross-env` argument to tell whether it sets a variable, e.g. `B=$A`.
+ * @param word The argument
+ * @param value Its static value
+ * @returns The value, or the text if the value isn't static
+ */
+const crossEnvArgumentText = (word: Word, value: string | undefined) => value ?? word.text;
+
+/**
+ * Finds the command that `cross-env` runs, after the variables that it sets.
+ * @param argumentWords Its arguments
+ * @param values Their static values
+ * @returns Index of the command's name, or -1 if there is none
+ */
+const crossEnvCommandIndex = (
+  argumentWords: readonly Word[],
+  values: readonly (string | undefined)[],
+) =>
+  argumentWords.findIndex(
+    (word, index) => !ASSIGNMENT.test(crossEnvArgumentText(word, values[index])),
+  );
 
 /**
  * Checks whether a name is a package spec rather than a path, e.g. `@scope/name` or
@@ -98,9 +141,6 @@ const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
 
 /** Options of pnpm and aube that make the command and its arguments a shell line */
 const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
-
-/** A word of letters, digits and underscores, e.g. a variable name */
-const IDENTIFIER = /\w+/g;
 
 const SHELL_OPTION = /^[+-]./;
 /** A shell option that takes a value, also at the end of a cluster, e.g. `-o` in `-euo pipefail` */
@@ -129,20 +169,6 @@ const findCommandString = (values: readonly (string | undefined)[]) => {
   }
 
   return -1;
-};
-
-/**
- * Checks whether a piece of a script mentions a variable that assignments set, e.g. `$PORT` for
- * `PORT=3000`.
- * @param text The piece of the script
- * @param items The assignments, among other items of a command
- * @returns Whether it does, even if only as a word that the shell doesn't expand
- */
-const doesMentionVariables = (text: string, items: readonly (CommandArgument | Redirection)[]) => {
-  const names = new Set(
-    items.filter((item) => item.type === 'Assignment').map((assignment) => assignment.name),
-  );
-  return (text.match(IDENTIFIER) || []).some((word) => names.has(word));
 };
 
 /**
@@ -318,7 +344,10 @@ export class CommandChecker {
       !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '') &&
       // The shell expands the command's variables before `cross-env` sets them, e.g. in
       // `next dev -p $PORT`
-      !doesMentionVariables(source.slice(command.pos, command.end), exporting.suffix)
+      !doesMentionVariables(
+        source.slice(command.pos, command.end),
+        new Set(exporting.suffix.filter(isPlainAssignment).map(({name}) => name)),
+      )
     ) {
       this.#positionalFixes.set(exporting.name, {
         description: 'Replace `export ... &&` with `cross-env`.',
@@ -347,18 +376,21 @@ export class CommandChecker {
     usageIssues: readonly UsageIssue[],
   ) {
     if (name === 'del' && this.#options.dependencies.includes('del-cli')) {
-      return this.#reporter.report(
-        context,
-        nameWord,
-        'inconsistentBehavior',
-        {
-          reason: "cmd.exe's builtin `del` takes precedence over del-cli's `del` binary",
-          suggestion: 'Use `del-cli` instead.',
-          syntax: '`del`',
-        },
-        WINDOWS_PLATFORMS,
-        replacement(nameWord, nameWord.text, 'del-cli'),
-      );
+      // Yarn's shell can't run cmd.exe's builtins, so it runs del-cli's binary everywhere
+      return context.portable
+        ? []
+        : this.#reporter.report(
+            context,
+            nameWord,
+            'inconsistentBehavior',
+            {
+              reason: "cmd.exe's builtin `del` takes precedence over del-cli's `del` binary",
+              suggestion: 'Use `del-cli` instead.',
+              syntax: '`del`',
+            },
+            WINDOWS_PLATFORMS,
+            replacement(nameWord, nameWord.text, 'del-cli'),
+          );
     }
 
     if (context.portable && PORTABLE_SHELL_BUILTINS.has(name)) {
@@ -382,6 +414,7 @@ export class CommandChecker {
           usageIssues.every((issue) => !issue.platforms.includes(platform)) &&
           (platform === 'linux' ||
             platforms.includes(platform) ||
+            (platform === 'darwin' && EXACT_NAME_BUILTINS.has(lowerCaseName)) ||
             // Yarn's shell only knows its builtins by their exact names, and Windows has no
             // executables for them, e.g. for `cd`
             (platform === 'win32' &&
@@ -433,21 +466,30 @@ export class CommandChecker {
     isCrossSpawned = false,
   ) {
     const name = staticValue(nameWord);
-    const result: InvocationResult = {
-      crossEnvStart: name === 'cross-env' || name === 'cross-env-shell' ? nameWord.end : undefined,
-      name,
-      target: name,
-    };
+    const result: InvocationResult = {crossEnv: undefined, name, target: name};
 
     if (name == null || depth > MAX_DEPTH) {
       return result;
     }
 
     const values = argumentWords.map(staticValue);
+    if (name === 'cross-env' || name === 'cross-env-shell') {
+      const commandIndex = crossEnvCommandIndex(argumentWords, values);
+      result.crossEnv = {
+        commandStart: argumentWords[commandIndex]?.pos ?? Number.POSITIVE_INFINITY,
+        start: nameWord.end,
+        variables: new Set(
+          argumentWords
+            .slice(0, commandIndex === -1 ? undefined : commandIndex)
+            .map((word, index) => substringBefore(crossEnvArgumentText(word, values[index]), '=')),
+        ),
+      };
+    }
+
     const follow = (wrapped: InvocationResult | undefined) => {
       // Not `||`: the target of a command named `""` is empty
       result.target = wrapped?.target ?? name;
-      result.crossEnvStart ||= wrapped?.crossEnvStart;
+      result.crossEnv ||= wrapped?.crossEnv;
     };
 
     // An ignored command isn't reported, but the commands it runs are
@@ -666,7 +708,7 @@ export class CommandChecker {
 
       case 'cross-env':
       case 'cross-env-shell': {
-        const index = values.findIndex((value) => value == null || !ASSIGNMENT.test(value));
+        const index = crossEnvCommandIndex(argumentWords, values);
 
         if (name === 'cross-env') {
           return invoke(index, {...context, crossEnv: true}, true);
@@ -697,13 +739,18 @@ export class CommandChecker {
       case 'upm':
       case 'yarn': {
         // e.g. `pnpm exec rm -rf dist`
-        const subcommand = findCommandIndex(values, 0, PACKAGE_MANAGER_VALUE_OPTIONS);
+        const subcommand = findCommandIndex(
+          values,
+          0,
+          name === 'npm' ? NPM_VALUE_OPTIONS : PACKAGE_MANAGER_VALUE_OPTIONS,
+        );
         if (!arrayIncludes(EXEC_SUBCOMMANDS[name], values[subcommand])) {
           return undefined;
         }
 
+        const execValueOptions = name === 'npm' ? NPM_EXEC_VALUE_OPTIONS : EXEC_VALUE_OPTIONS;
         if (name === 'npm' || name === 'upm') {
-          const call = callIndex(subcommand + 1, EXEC_VALUE_OPTIONS);
+          const call = callIndex(subcommand + 1, execValueOptions);
           if (call !== -1) {
             nestedShellString(call);
             return undefined;
@@ -720,7 +767,7 @@ export class CommandChecker {
           }
         }
 
-        return invoke(findCommandIndex(values, subcommand + 1, EXEC_VALUE_OPTIONS));
+        return invoke(findCommandIndex(values, subcommand + 1, execValueOptions));
       }
 
       case 'npx':

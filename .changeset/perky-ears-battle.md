@@ -11,7 +11,7 @@ Fixed several wrong fixes and reports:
 - Stopped platform fallbacks like `a || b` from hiding issues in the arguments of their commands
 - Made `getRunner` check whole version ranges: `^9 || ^11` gives `pnpm`, and Yarn ranges that allow both v1 and v2+, like `>=1`, give `undefined`
 - Fixed a stack overflow on deeply nested scripts
-- Stopped reporting what `cross-env` handles behind another command, like `$A` in `npx cross-env A=1 x $A`, and arguments of a script file, like `-c` in `bash build.sh -c x`
+- Stopped reporting what `cross-env` handles behind another command, like `$B` in `npx cross-env A=1 x $B`, and arguments of a script file, like `-c` in `bash build.sh -c x`
 - Started reporting operators in single-quoted `echo` strings, like `echo 'a > b'`, double-quoted `echo` output that goes into a pipe, and the commands that GNU `timeout` runs
 - Stopped fixes from putting `cross-env` before shell builtins, like `cd` and `exec`, and from joining `;# comment` to the word before it
 - Stopped reporting comment-only scripts with several lines, and an escaped backslash in `sed` patterns, like `\\b`
@@ -26,3 +26,8 @@ Fixed several wrong fixes and reports:
 - Stopped reporting the text of a here-string as a path, like `/dev/null` in `node x <<< /dev/null`
 - Stopped reporting `function_a() { ... }` as the `function` keyword, `cd` in `(cd a && x) > log`, and `base64 -w` on macOS
 - Stopped throwing on unknown runners, which are now ignored
+- Started reporting shell builtins in the wrong case on macOS too, like `EXIT 0` and `CD src`
+- Started reporting variables that `cross-env` sets and its command uses, like `$A` in `cross-env A=1 node x $A`, which POSIX shells expand before `cross-env` runs
+- Started checking the commands after npm's `-w` and `--workspace <name>`, like `rm` in `npm exec -w pkg -- rm -rf x`, and after `cross-env A=$B`
+- Stopped reporting del-cli's `del` in Yarn's shell, which can't run cmd.exe's builtins
+- Stopped fixes from putting `cross-env` before assignments that use each other, like `PORT=3000 URL=http://localhost:$PORT node x`, and from removing `> /dev/null` before a pipe, like in `a > /dev/null | b`

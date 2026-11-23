@@ -45,6 +45,7 @@ import {
   GLOB_PART_TYPES,
   POSIX_PATH,
   TILDE_EXPANSION,
+  doesMentionVariables,
   isPlainAssignment,
   isPlainWord,
   staticValue,
@@ -231,6 +232,8 @@ const crossEnvCommands = new WeakMap<Command, boolean>();
  * in `A=1 cd x`.
  * Bash would expand braces in the arguments of `cross-env`, e.g. in `A={a,b}`, unlike in
  * assignments.
+ * dash applies assignments one by one, e.g. `$A` in `A=1 B=$A cmd` is `1`, while the shell expands
+ * the arguments of `cross-env` before it sets any of them.
  * @param command The command
  * @returns Whether it can
  */
@@ -240,13 +243,20 @@ const canPrefixWithCrossEnv = (command: Command) => {
     return cached;
   }
 
+  const names = new Set<string>();
   const canPrefix =
     command.name != null &&
-    command.prefix.every(
-      (item) =>
-        isPlainAssignment(item) &&
-        !item.value.parts?.some((part) => part.type === 'BraceExpansion'),
-    ) &&
+    command.prefix.every((item) => {
+      if (
+        !isPlainAssignment(item) ||
+        item.value.parts?.some((part) => part.type === 'BraceExpansion') ||
+        doesMentionVariables(item.value.text, names)
+      ) {
+        return false;
+      }
+      names.add(item.name);
+      return true;
+    }) &&
     !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '');
   crossEnvCommands.set(command, canPrefix);
   return canPrefix;
@@ -390,7 +400,8 @@ export class WordChecker {
   }
 
   /**
-   * Reports a variable that `cross-env` replaces with an empty string on Windows, e.g. `$PWD`.
+   * Reports a variable that `cross-env` replaces on Windows with a different value than POSIX
+   * shells use, e.g. `$PWD`, or `$A` in `cross-env A=1 node $A`.
    * @param name Name of the variable
    * @param node The variable expansion
    * @param context Where the expansion is
@@ -402,7 +413,26 @@ export class WordChecker {
     context: Context,
   ) {
     // Yarn's shell expands variables itself
-    if (context.portable || !this.#isUnsetOnWindows(name)) {
+    if (context.portable) {
+      return [];
+    }
+
+    if (context.crossEnvVariables?.has(name)) {
+      return this.#reporter.report(
+        context,
+        node,
+        'inconsistentBehavior',
+        {
+          reason:
+            "POSIX shells expand it before `cross-env` sets it, so the command doesn't get the new value",
+          suggestion: 'Use the value itself or a Node.js script instead.',
+          syntax: `The variable \`${node.text}\``,
+        },
+        POSIX_PLATFORMS,
+      );
+    }
+
+    if (!this.#isUnsetOnWindows(name)) {
       return [];
     }
 

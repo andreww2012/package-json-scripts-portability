@@ -183,14 +183,14 @@ Runner-agnostic scripts aren't checked with `node --run`, since it doesn't insta
 
 ## Options
 
-| Option                  | Default                       | Description                                                                                                                                |
-| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dependencies`          | `[]`                          | Names of the package's dependencies. With [`del-cli`][del-cli], `del` is reported as cmd.exe's builtin, which takes precedence on Windows. |
-| `ignoreCommands`        | `[]`                          | Commands not to report, e.g. ones that you install on every platform. The commands that they run are still checked.                        |
-| `runner`                | `'npm'`                       | What runs the scripts, or a list of runners, see [Package managers](#package-managers).                                                    |
-| `runnerAgnosticScripts` | Install scripts and `prepare` | Scripts that are checked with all package managers, see [Runner-agnostic scripts](#runner-agnostic-scripts).                               |
-| `scriptName`            | None                          | The script's name in `package.json`, e.g. `postinstall`, to tell whether it's runner-agnostic.                                             |
-| `shellEmulator`         | `false`                       | Whether pnpm's `shell-emulator` setting is on, so that it runs the scripts with Yarn's shell.                                              |
+| Option                  | Default                       | Description                                                                                                                                                     |
+| ----------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dependencies`          | `[]`                          | Names of the package's dependencies. With [`del-cli`][del-cli], `del` is reported as cmd.exe's builtin, which takes precedence on Windows outside Yarn's shell. |
+| `ignoreCommands`        | `[]`                          | Commands not to report, e.g. ones that you install on every platform. The commands that they run are still checked.                                             |
+| `runner`                | `'npm'`                       | What runs the scripts, or a list of runners, see [Package managers](#package-managers).                                                                         |
+| `runnerAgnosticScripts` | Install scripts and `prepare` | Scripts that are checked with all package managers, see [Runner-agnostic scripts](#runner-agnostic-scripts).                                                    |
+| `scriptName`            | None                          | The script's name in `package.json`, e.g. `postinstall`, to tell whether it's runner-agnostic.                                                                  |
+| `shellEmulator`         | `false`                       | Whether pnpm's `shell-emulator` setting is on, so that it runs the scripts with Yarn's shell.                                                                   |
 
 ## API
 
