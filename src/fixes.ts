@@ -27,12 +27,15 @@ const LINE_BREAK = /^\r?\n/;
 const BACKSLASH_CODE_POINT = 92;
 /** Options of `rm` that `rimraf` doesn't need, e.g. `-rf` */
 const RM_OPTION = /^(?:-[Rfr]+|--force|--recursive)$/;
+/** One of these options that makes `rm` delete directories, e.g. `-rf` */
+const RM_RECURSIVE_OPTION = /^(?:-f*[Rr]|--recursive)/;
+/** One of these options that makes `rm` ignore missing paths, e.g. `-rf` */
+const RM_FORCE_OPTION = /^(?:-[Rr]*f|--force)/;
 /** A binary of a dependency, which package managers add to `PATH` */
 export const DEPENDENCY_BINARY = /^(?:\.\/)?node_modules\/\.bin\/([^/]+)$/;
 /** Commands that run instead of a dependency's binary with the same name, e.g. cmd.exe's `del` */
 const SHADOWING_COMMANDS: ReadonlySet<string> =
   OS_COMMANDS.union(CMD_BUILTINS).union(SHELL_STATE_COMMANDS);
-const JAVASCRIPT_FILE = /\.[cm]?js$/;
 /** Characters that `rimraf --glob` treats as glob syntax, e.g. `[` */
 const GLOB_SYNTAX = /[(*?[\\\]{}]|^!/;
 /** A brace expansion of plain alternatives, e.g. `{a,b}` */
@@ -232,12 +235,16 @@ export const commandFix = (
         (word) => !RM_OPTION.test(staticValue(word) || ''),
       );
       const paths = optionCount === -1 ? [] : argumentWords.slice(optionCount);
+      const options = argumentWords.slice(0, optionCount).map((word) => staticValue(word) || '');
       const globs = paths.filter((word) =>
         word.parts?.some((part) => GLOB_PART_TYPES.includes(part.type)),
       );
 
       if (
         paths.length === 0 ||
+        // `rimraf` deletes directories and ignores missing paths, like `rm -rf` only
+        options.every((option) => !RM_RECURSIVE_OPTION.test(option)) ||
+        options.every((option) => !RM_FORCE_OPTION.test(option)) ||
         paths.some((word) => staticValue(word)?.startsWith('-') && word.text !== '--') ||
         globs.some((word) => !isPlainWord(word, GLOB_PART_TYPES)) ||
         // `rimraf` matches `**` recursively, unlike `sh`, which reads it as `*`
@@ -249,7 +256,6 @@ export const commandFix = (
         return undefined;
       }
 
-      // Without options, e.g. in `rm dist.zip`, it's the end of `rm` itself
       const end = argumentWords[optionCount - 1]?.end || nameWord.end;
       const original = source.slice(nameWord.pos, end);
 
@@ -287,12 +293,14 @@ export const commandFix = (
 };
 
 /**
- * Gets a fix for running a command by its path, e.g. `node ./build.js` for `./build.js`.
+ * Gets a fix for running a command by its path, e.g. `tsc` for `./node_modules/.bin/tsc`.
+ * There's none for a JavaScript file, e.g. `./build.mjs`: its shebang may run it with something
+ * else than `node`, like `zx`, `bun` or `node` with options
  * @param name Path that the command was invoked with
  * @param nameWord Word that the path comes from
  * @param isDirectoryChanged Whether a command before it changed the directory, e.g. `cd`, so that
  * the binary's name could run another package's binary
- * @returns The fix, if the path is a dependency's binary or a JavaScript file
+ * @returns The fix, if the path is a dependency's binary
  */
 export const pathCommandFix = (
   name: string,
@@ -300,17 +308,8 @@ export const pathCommandFix = (
   isDirectoryChanged: boolean,
 ): ScriptFix | undefined => {
   const binary = DEPENDENCY_BINARY.exec(name)?.[1];
-  if (binary) {
-    return isDirectoryChanged || SHADOWING_COMMANDS.has(binary.toLowerCase())
-      ? undefined
-      : replacement(nameWord, nameWord.text, binary);
-  }
-
-  return JAVASCRIPT_FILE.test(name)
-    ? {
-        description: 'Run the file with `node`.',
-        edits: [{end: nameWord.pos, pos: nameWord.pos, text: 'node '}],
-      }
+  return binary && !isDirectoryChanged && !SHADOWING_COMMANDS.has(binary.toLowerCase())
+    ? replacement(nameWord, nameWord.text, binary)
     : undefined;
 };
 

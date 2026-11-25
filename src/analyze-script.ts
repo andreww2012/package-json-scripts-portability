@@ -85,16 +85,21 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, Run
  * @param options Analysis options
  * @returns The issues found, with offsets relative to the script
  */
-export const analyzeScript = (script: string, options: AnalyzeScriptOptions = {}) => {
+export const analyzeScript = (script: string, options?: AnalyzeScriptOptions) => {
   if (COMMENT_LINES.test(script.trimEnd())) {
     return [];
   }
 
+  // `null` from JavaScript callers means the defaults too
+  const analysisOptions = options || {};
   // Unknown runners are ignored, as the functions that format platforms and runners do
-  const runners = isRunnerAgnosticScript(options.scriptName, options.runnerAgnosticScripts)
+  const runners = isRunnerAgnosticScript(
+    analysisOptions.scriptName,
+    analysisOptions.runnerAgnosticScripts,
+  )
     ? PACKAGE_MANAGER_RUNNERS
-    : arrayify(options.runner).filter((runner) => KNOWN_RUNNERS.has(runner));
+    : arrayify(analysisOptions.runner).filter((runner) => KNOWN_RUNNERS.has(runner));
   return mergeIssues(
-    analyzeWithRunners(script, options, runners.length > 0 ? runners : DEFAULT_RUNNERS),
+    analyzeWithRunners(script, analysisOptions, runners.length > 0 ? runners : DEFAULT_RUNNERS),
   );
 };

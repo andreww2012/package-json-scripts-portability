@@ -7,11 +7,14 @@ import {
   type ParsedScript,
   type Pipeline,
   type PipelineNode,
+  type Redirection,
   type Script,
   type Statement,
   type Subshell,
+  type SyntaxNode,
   type TestExpression,
   type Word,
+  forEachChild,
   parse,
 } from 'unbash';
 import type {AnalyzeScriptOptions} from './analyze-script.ts';
@@ -66,9 +69,13 @@ const COMMENTS = /(?:^|[\s&;|])(#[^\n]*)/g;
 const SCRIPT_GLOBS = /((?:bun|npm|pnpm|yarn) run|node --run|deno task) (\S*\*\S*)/g;
 /** `shopt -s globstar`, which makes `**` recursive in the following commands */
 const SHOPT_GLOBSTAR = /\bshopt\s+-s\s+(?:\w+\s+)*globstar\b/;
-// cspell:disable-next-line
-/** The rest of a script that only closes subshells, apart from `;` and comments */
-const CLOSING_PARENTHESES = /^(?:[\s);]|#[^\n]*(?:\n|$))*$/;
+
+/**
+ * The rest of a script that doesn't depend on the directory: closing parentheses, `;`, `&` and
+ * comments, and `exit`, `true`, `false` or `:` after `&&` or `||`, e.g. in `(cd a && b) || exit 1`
+ */
+const DIRECTORY_INDEPENDENT_REST =
+  /^(?:[\s&);]|#[^\n]*(?:\n|$)|(?:&&|\|\|)\s*(?:exit(?:\s+\d+)?|true|false|:))*$/;
 const ONE_LINE_SUGGESTION = 'Put the commands on one line instead.';
 /** cmd.exe's `if` and `for` statements, e.g. `if exist dist` or `if "%CI%"=="true"` */
 const WINDOWS_BATCH_SYNTAX: readonly RegExp[] = [
@@ -96,6 +103,55 @@ const doesChangeDirectory = (node: AndOr | PipelineNode) => {
   }
 };
 
+/** Arithmetic operators that assign, e.g. `+=` */
+const ARITHMETIC_ASSIGNMENT = /^(?:[%&*+\-/^|]|<<|>>)?=$/;
+
+/**
+ * Checks whether a piece of a command has an expansion that assigns a variable, e.g. `${A:=1}` or
+ * `$((i++))`.
+ * @param node The piece, e.g. a command or a word
+ * @returns Whether it does, apart from in a command substitution, which runs in a subshell
+ */
+const hasAssigningExpansion = (node: SyntaxNode): boolean => {
+  switch (node.type) {
+    case 'ArithmeticBinary': {
+      if (ARITHMETIC_ASSIGNMENT.test(node.operator)) {
+        return true;
+      }
+      break;
+    }
+    case 'ArithmeticCommandExpansion':
+    case 'CommandExpansion':
+    case 'ProcessSubstitution': {
+      return false;
+    }
+    case 'ArithmeticUnary': {
+      if (node.operator === '++' || node.operator === '--') {
+        return true;
+      }
+      break;
+    }
+    case 'ParameterExpansion': {
+      if (
+        node.operation?.type === 'Default' &&
+        (node.operation.operator === '=' || node.operation.operator === ':=')
+      ) {
+        return true;
+      }
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+
+  const children: SyntaxNode[] = [];
+  forEachChild(node, (child) => {
+    children.push(child);
+  });
+  return children.some(hasAssigningExpansion);
+};
+
 /**
  * Checks whether commands change the shell's state, e.g. with `exit` or a variable assignment.
  * @param node A command group or its commands
@@ -114,12 +170,14 @@ const doesChangeShellState = (node: AndOr | PipelineNode): boolean => {
       );
     }
     case 'Command': {
-      return node.name
-        ? SHELL_STATE_COMMANDS.has(node.name.value)
-        : node.prefix.some((item) => item.type === 'Assignment');
+      return (
+        (node.name
+          ? SHELL_STATE_COMMANDS.has(node.name.value)
+          : node.prefix.some((item) => item.type === 'Assignment')) || hasAssigningExpansion(node)
+      );
     }
     case 'Redirected': {
-      return doesChangeShellState(node.command);
+      return doesChangeShellState(node.command) || node.redirects.some(hasAssigningExpansion);
     }
     case 'Subshell': {
       return false;
@@ -153,6 +211,43 @@ const originalNestedSource = (source: string, text: string, original: string) =>
   }
 
   return result + source.slice(index);
+};
+
+/**
+ * Gets the parts of a command whose failures make the command itself fail, e.g. the last
+ * statement of `( ... )`, but no command of an `if` statement, which succeeds when its condition
+ * fails.
+ * @param node The command
+ * @returns The ranges of the parts in the command's source
+ */
+const failureRanges = (node: AndOr | PipelineNode): Range[] => {
+  switch (node.type) {
+    case 'AndOr': {
+      // A failure before `||` runs the next command instead
+      return node.commands.slice(node.operators.lastIndexOf('||') + 1).flatMap(failureRanges);
+    }
+    case 'ArithmeticFor':
+    case 'Case':
+    case 'Coproc':
+    case 'For':
+    case 'Function':
+    case 'If':
+    case 'Select':
+    case 'While': {
+      return [];
+    }
+    case 'BraceGroup':
+    case 'Subshell': {
+      const last = node.body.commands.at(-1);
+      return last && !last.background ? failureRanges(last.command) : [];
+    }
+    case 'Redirected': {
+      return [...failureRanges(node.command), ...node.redirects];
+    }
+    default: {
+      return [node];
+    }
+  }
 };
 
 /** Gets what identifies the message of an issue, e.g. to find the same issue elsewhere */
@@ -337,7 +432,7 @@ class ScriptAnalyzer {
   #analyzeNestedWords(
     words: readonly Word[],
     context: Context,
-    {bashOptions, crossEnv, maskScriptGlobs = false, shell}: NestedWordsOptions,
+    {bashOptions, crossEnv, maskScriptGlobs = false, outerWord, shell}: NestedWordsOptions,
   ) {
     // Real scripts aren't nested deeper, and analyzing such nesting is slow and can overflow the
     // stack
@@ -410,7 +505,7 @@ class ScriptAnalyzer {
     // Joined words are reported as a whole, so each of them is still checked, e.g. for its exact
     // position and fixes
     if (isAnalyzed && words.length === 1) {
-      (this.#nestedScriptWords ||= new WeakSet()).add(word);
+      (this.#nestedScriptWords ||= new WeakSet()).add(outerWord || word);
     } else if (words.length > 1) {
       const joinedWords = this.#joinedScriptWords || new WeakSet<Word>();
       this.#joinedScriptWords = joinedWords;
@@ -569,8 +664,9 @@ class ScriptAnalyzer {
    * @param node The list of commands joined by `||` (and other operators)
    * @param starts Index of the first issue of each command in the list, and of the end of its
    * issues
+   * @param context Where the list is
    */
-  #dropPlatformFallbacks(node: AndOr, starts: readonly number[]) {
+  #dropPlatformFallbacks(node: AndOr, starts: readonly number[], context: Context) {
     if (!node.operators.includes('||')) {
       return;
     }
@@ -578,15 +674,18 @@ class ScriptAnalyzer {
     const issuesOf = (index: number) =>
       this.#reporter.issues.slice(starts[index], starts[index + 1]);
     // Where each alternative fails, e.g. as its command isn't available, unlike where only its
-    // arguments have issues, like `$OUT` in `tsc --outDir $OUT || rd /s /q out`
-    const failingPlatforms = node.commands.map(
-      (_, index) =>
-        new Set(
-          issuesOf(index)
-            .filter((issue) => this.#reporter.isFailure(issue))
-            .flatMap((issue) => issue.platforms),
-        ),
-    );
+    // arguments have issues, like `$OUT` in `tsc --outDir $OUT || rd /s /q out`, or where the
+    // failing command doesn't decide, like `rm` in `(rm -rf a; tsc) || rd /s /q a`
+    const failingPlatforms = node.commands.map((command, index) => {
+      const ranges = failureRanges(command).map((range) => rangeInScript(context, range));
+      return new Set(
+        issuesOf(index)
+          .filter((issue) =>
+            ranges.some((range) => range.pos <= issue.pos && issue.end <= range.end),
+          )
+          .flatMap((issue) => this.#reporter.failingPlatforms(issue)),
+      );
+    });
     const platformsOf = (index: number) => failingPlatforms[index] || NO_PLATFORMS;
     // Where an alternative fails, the next one runs, but its issues still apply elsewhere, e.g.
     // `**/` in `rm -rf **/x || rd /s /q x` on macOS and Linux
@@ -602,7 +701,15 @@ class ScriptAnalyzer {
         (common.size === 0 ? failing : partialFallbackPlatforms(failing)).forEach(
           (platforms, offset) => {
             issuesOf(runStart + offset).forEach((issue) => {
-              removedPlatforms.set(issue, platforms);
+              const failures = this.#reporter.failingPlatforms(issue);
+              // A command that is reported everywhere, as it's not known what it's meant for, is
+              // meant for where it works, e.g. cmd.exe's `type` in `cat f || type f`
+              removedPlatforms.set(
+                issue,
+                failures.length > 0 && failures.every((platform) => platforms.has(platform))
+                  ? new Set(issue.platforms)
+                  : platforms,
+              );
             });
           },
         );
@@ -622,8 +729,15 @@ class ScriptAnalyzer {
    * @param context Where the command is
    * @param commandEnd Where the command ends along with its redirections, e.g. `> log` after
    * `( ... )`
+   * @param redirects The redirections of the command, if it's a compound command, e.g. `> log`
+   * after `( ... )`
    */
-  #walkCommand(node: AndOr | PipelineNode, context: Context, commandEnd = node.end) {
+  #walkCommand(
+    node: AndOr | PipelineNode,
+    context: Context,
+    commandEnd = node.end,
+    redirects: readonly Redirection[] = [],
+  ) {
     switch (node.type) {
       case 'AndOr': {
         const starts: number[] = [];
@@ -632,7 +746,7 @@ class ScriptAnalyzer {
           this.#walkCommand(command, context);
         });
         starts.push(this.#reporter.issues.length);
-        this.#dropPlatformFallbacks(node, starts);
+        this.#dropPlatformFallbacks(node, starts, context);
         this.#lineBreaks.checkOperatorLineBreaks(node.commands, context);
         break;
       }
@@ -652,7 +766,11 @@ class ScriptAnalyzer {
 
       case 'BraceGroup': {
         // A subshell keeps e.g. `cd` and `exit` from affecting the commands that follow
-        const isSubshellSafe = context.source[node.end - 1] === '}' && !doesChangeShellState(node);
+        // Bash expands the redirections of a subshell in the subshell too
+        const isSubshellSafe =
+          context.source[node.end - 1] === '}' &&
+          !doesChangeShellState(node) &&
+          !redirects.some(hasAssigningExpansion);
         const covered = this.#reporter.reportSyntax(
           context,
           {end: node.pos + 1, pos: node.pos},
@@ -789,7 +907,7 @@ class ScriptAnalyzer {
         const redirectedContext = node.redirects.some(doesRedirectOutput)
           ? {...context, outputRedirected: true}
           : context;
-        this.#walkCommand(node.command, redirectedContext, commandEnd);
+        this.#walkCommand(node.command, redirectedContext, commandEnd, node.redirects);
         node.redirects.forEach((redirection) => {
           this.#redirections.checkRedirection(redirection, redirectedContext);
         });
@@ -809,7 +927,7 @@ class ScriptAnalyzer {
         if (
           !context.portable &&
           node.body.commands.some((statement) => doesChangeDirectory(statement.command)) &&
-          !CLOSING_PARENTHESES.test(context.source.slice(commandEnd))
+          !DIRECTORY_INDEPENDENT_REST.test(context.source.slice(commandEnd))
         ) {
           this.#reporter.reportSyntax(context, node, 'posix', true, 'inconsistentBehavior', {
             reason:

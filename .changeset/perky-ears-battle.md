@@ -51,3 +51,11 @@ Fixed several wrong fixes and reports:
 - Started reporting `{fd}>` redirections on macOS, `timeout 5` without a command on macOS and Linux instead of Windows, and `type` in Yarn's shell
 - Fixed the report of `trap ... ERR` for dash, which fails on it instead of ignoring the trap
 - Stopped throwing on `runnerAgnosticScripts: null`
+- Stopped offering `rimraf` for `rm` without both `-r` and `-f`, like `rm -f dist/*`, and `node` for script files like `./build.mjs`, whose shebang may run something else
+- Stopped fixes from removing redirections of descriptors other than the standard output and error, like `3> /dev/null`, and from replacing `{ ... }` with `( ... )` when it assigns variables in expansions, like `${X:=1}` or `$((i++))`
+- Stopped the `export ... &&` fix from having two edits at the same offset, like for `export A=* && x`
+- Stopped reporting `dir /usr/lib` as a cmd.exe option, package specs with `/` as command paths, like `npx ./packages/cli`, and `cd` in `( ... )` followed only by `&` or a command like `|| exit 1`
+- Stopped reporting `cat f || type f`, and the values of options as options, like `-P` in `grep -e -P` and `i` in `sed -ei`
+- Made the `timeout` report say that only older macOS versions lack it
+- Started reporting failures that don't make a `||` alternative fail, like `rm` in `(rm -rf a; tsc) || rd /s /q a`, line breaks in each of several equal nested scripts, the scripts of `npx --call=...`, and Bash's `>&3-` as a descriptor move without a fix
+- Stopped throwing on `null` options

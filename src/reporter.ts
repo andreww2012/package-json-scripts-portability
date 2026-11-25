@@ -74,8 +74,11 @@ export class Reporter {
    */
   readonly issues: RunnerIssue[] = [];
 
-  /** Issues that make a command fail, e.g. `rm` on Windows, unlike ones in its arguments */
-  readonly #failures = new WeakSet<RunnerIssue>();
+  /**
+   * Issues that make a command fail, e.g. `rm` on Windows, unlike ones in its arguments, with the
+   * platforms where it fails, if only on some of the issue's platforms
+   */
+  readonly #failures = new WeakMap<RunnerIssue, readonly Platform[] | undefined>();
 
   /**
    * Length of the analyzed script, which `unbash`'s positions can exceed, e.g. after a trailing `\`
@@ -110,12 +113,32 @@ export class Reporter {
   }
 
   /**
-   * Marks the issues reported since an index as ones that make a command fail.
-   * @param start Index of the first issue to mark
+   * Gets where an issue makes its command fail.
+   * @param issue The issue
+   * @returns The platforms, which are none if it doesn't make the command fail
    */
-  markFailures(start: number) {
+  failingPlatforms(issue: RunnerIssue) {
+    if (!this.#failures.has(issue)) {
+      return [];
+    }
+    const platforms = this.#failures.get(issue);
+    return platforms
+      ? issue.platforms.filter((platform) => platforms.includes(platform))
+      : issue.platforms;
+  }
+
+  /**
+   * Marks the issues reported since an index as ones that make a command fail, unless they are
+   * marked already.
+   * @param start Index of the first issue to mark
+   * @param platforms Where they make the command fail, if only on some of their platforms, e.g.
+   * where the issue is that it's not known what the command is meant for
+   */
+  markFailures(start: number, platforms?: readonly Platform[]) {
     this.issues.slice(start).forEach((issue) => {
-      this.#failures.add(issue);
+      if (!this.#failures.has(issue)) {
+        this.#failures.set(issue, platforms);
+      }
     });
   }
 

@@ -164,6 +164,8 @@ const crossEnvCommandIndex = (
  * `github:user/repo` (for `npx`)
  */
 const isPackageSpec = (name: string) => name.startsWith('@') || name.includes(':');
+/** Commands that run a package's binary, whose first argument is a package spec, e.g. `npx` */
+const PACKAGE_SPEC_RUNNERS: ReadonlySet<string> = new Set(['aubx', 'bunx', 'npx', 'pnpx', 'upx']);
 const SHELL_SCRIPT = /\.(?:bash|command|sh|zsh)$/;
 const WINDOWS_SCRIPT = /\.(?:bat|cmd|exe|ps1|vbs)$/i;
 
@@ -179,6 +181,34 @@ const DIRECTORY_COMMANDS: ReadonlySet<string> = new Set(['cd', 'pushd']);
 
 /** Options of `npx` and `npm exec` that take a shell string */
 const CALL_OPTIONS: ReadonlySet<string> = new Set(['--call', '-c']);
+/** The shell string's option of `npx` and `npm exec` with an attached value */
+const CALL_PREFIX = '--call=';
+
+/**
+ * Gets the rest of a word after a prefix of plain text, e.g. the script in `--call='rm -rf x'`.
+ * @param word The word, whose text starts with the prefix
+ * @param length Length of the prefix
+ * @returns A word with the rest of the text and parts
+ */
+const wordAfter = (word: Word, length: number): Word => {
+  const pos = word.pos + length;
+  const [first, ...rest] = word.parts || [];
+  return {
+    end: word.end,
+    // The first part is the literal text that starts with the prefix
+    parts:
+      first?.type === 'Literal' && first.end > pos
+        ? [
+            {...first, pos, text: first.text.slice(length), value: first.value.slice(length)},
+            ...rest,
+          ]
+        : first && rest,
+    pos,
+    text: word.text.slice(length),
+    type: 'Word',
+    value: word.value.slice(length),
+  };
+};
 
 /** Options of pnpm and aube that make the command and its arguments a shell line */
 const SHELL_MODE_OPTIONS: ReadonlySet<string> = new Set(['--shell-mode', '-c']);
@@ -253,6 +283,8 @@ export interface NestedWordsOptions {
   crossEnv: Context['crossEnv'];
   /** Whether `concurrently` runs the script, which expands globs of script names itself */
   maskScriptGlobs?: boolean;
+  /** The word that contains the script, if the script is only its end, e.g. in `--call=...` */
+  outerWord?: Word;
   shell: Shell;
 }
 
@@ -410,12 +442,15 @@ export class CommandChecker {
         [command.name, ...command.suffix.filter((item) => item.type === 'Word')],
       );
       if (edits) {
+        // The closing quote of the last value goes before the text that replaces ` && `, so that
+        // no edits share an offset
+        const closingQuote = edits.find((edit) => edit.pos === exporting.end);
         this.#positionalFixes.set(exporting.name, {
           description: 'Replace `export ... &&` with `cross-env`.',
           edits: [
             {end: exporting.name.end, pos: exporting.name.pos, text: 'cross-env'},
-            {end: command.pos, pos: exporting.end, text: ' '},
-            ...edits,
+            {end: command.pos, pos: exporting.end, text: `${closingQuote?.text || ''} `},
+            ...edits.filter((edit) => edit !== closingQuote),
           ],
         });
       }
@@ -475,7 +510,8 @@ export class CommandChecker {
 
     // It's not known which of them a script for the runner's shell means, unlike in `sh -c "..."`
     if (lowerCaseName === 'type' && context.shell === 'native' && !context.portable) {
-      return this.#reporter.report(
+      const firstIssue = this.#reporter.issues.length;
+      const covered = this.#reporter.report(
         context,
         nameWord,
         'inconsistentBehavior',
@@ -487,6 +523,10 @@ export class CommandChecker {
         },
         PLATFORMS,
       );
+      // As cmd.exe's `type`, it fails elsewhere, so it can be the Windows alternative of a command,
+      // e.g. in `cat f || type f`
+      this.#reporter.markFailures(firstIssue, POSIX_PLATFORMS);
+      return covered;
     }
 
     // Yarn's shell can't run cmd.exe's builtins, and Windows has no executable for it
@@ -574,6 +614,8 @@ export class CommandChecker {
    * @param depth How many commands run this command, e.g. 1 for `rm` in `cross-env A=1 rm`
    * @param isCrossSpawned Whether `cross-spawn` runs the command (in `cross-env`), which works with
    * paths and shebangs on Windows
+   * @param isPackageSpecName Whether the name is a package spec that a package manager reads, e.g.
+   * `./packages/cli` in `npx ./packages/cli`, rather than a command that a shell runs
    * @returns What the command is, and what it runs
    */
   checkInvocation(
@@ -582,6 +624,7 @@ export class CommandChecker {
     context: Context,
     depth: number,
     isCrossSpawned = false,
+    isPackageSpecName = false,
   ) {
     const name = staticValue(nameWord);
     const result: InvocationResult = {crossEnv: undefined, name, target: name};
@@ -666,7 +709,7 @@ export class CommandChecker {
           POSIX_PLATFORMS,
         ),
       );
-    } else if (name.includes('/') && !isPackageSpec(name)) {
+    } else if (!isPackageSpecName && name.includes('/') && !isPackageSpec(name)) {
       // Yarn v1 replaces `/` with `\` in some command names on Windows, which then run the `.cmd`
       // file of a dependency's binary. The trait is read last, as the analysis is only reused for
       // runners with the same values of the traits that it read
@@ -760,7 +803,12 @@ export class CommandChecker {
     depth: number,
   ) {
     // `.` is the package in the current directory for `npx` and the like, not a command
-    const invoke = (index: number, nestedContext = context, isCrossSpawned = false) => {
+    const invoke = (
+      index: number,
+      nestedContext = context,
+      isCrossSpawned = false,
+      isPackageSpecName = false,
+    ) => {
       const word = argumentWords[index];
       return !word || values[index] === '.'
         ? undefined
@@ -772,8 +820,17 @@ export class CommandChecker {
             nestedContext.portable ? {...nestedContext, portable: false} : nestedContext,
             depth + 1,
             isCrossSpawned,
+            isPackageSpecName,
           );
     };
+    // The command of `npx`, `pnpm dlx` and the like is a package spec, e.g. `./packages/cli`, unless
+    // the options name the package, e.g. `npx -p typescript tsc`
+    const isPackageSpecAt = (start: number, index: number) =>
+      values
+        .slice(start, index)
+        .every(
+          (value) => value !== '-p' && value !== '--package' && !value?.startsWith('--package='),
+        );
 
     const nestedShellString = (
       index: number,
@@ -803,15 +860,29 @@ export class CommandChecker {
       }
     };
 
-    // `-c`/`--call` of `npx` and `npm exec` (a shell string), which is only their option before the
-    // command they run
+    // `-c`/`--call` of `npx` and `npm exec` (a shell string), also attached, e.g.
+    // `--call='rm -rf x'`, which is only their option before the command they run
     const callIndex = (start: number, valueOptions: readonly string[]) => {
       const commandIndex = findCommandIndex(values, start, [...valueOptions, ...CALL_OPTIONS]);
       const end = commandIndex === -1 ? values.length : commandIndex;
-      const index = values.findIndex(
-        (value, i) => i >= start && i < end && setHas(CALL_OPTIONS, value),
+      return values.findIndex(
+        (value, i) =>
+          i >= start &&
+          i < end &&
+          (setHas(CALL_OPTIONS, value) || argumentWords[i]?.text.startsWith(CALL_PREFIX) === true),
       );
-      return index === -1 ? -1 : index + 1;
+    };
+    const analyzeCall = (index: number) => {
+      const option = argumentWords[index];
+      if (setHas(CALL_OPTIONS, values[index])) {
+        nestedShellString(index + 1);
+      } else if (option && depth < MAX_DEPTH) {
+        this.#analyzeNested([wordAfter(option, CALL_PREFIX.length)], context, {
+          crossEnv: false,
+          outerWord: option,
+          shell: 'native',
+        });
+      }
     };
     // `-c`/`--shell-mode` of pnpm and aube, after which the command and its arguments are a shell
     // line. pnpm also takes it before its subcommand and in clusters, e.g. in `pnpm -rc exec`
@@ -911,7 +982,7 @@ export class CommandChecker {
         if (name === 'npm' || name === 'upm') {
           const call = callIndex(subcommand + 1, execValueOptions);
           if (call !== -1) {
-            nestedShellString(call);
+            analyzeCall(call);
             return undefined;
           }
         } else if (name === 'aube' || name === 'pnpm') {
@@ -926,14 +997,22 @@ export class CommandChecker {
           }
         }
 
-        return invoke(findCommandIndex(values, subcommand + 1, execValueOptions));
+        const commandIndex = findCommandIndex(values, subcommand + 1, execValueOptions);
+        return invoke(
+          commandIndex,
+          context,
+          false,
+          // e.g. `pnpm dlx` and `npm exec`, but not `pnpm exec`, which runs a command
+          (values[subcommand] !== 'exec' || name === 'npm' || name === 'upm') &&
+            isPackageSpecAt(subcommand + 1, commandIndex),
+        );
       }
 
       case 'npx':
       case 'upx': {
         const call = callIndex(0, valueOptions || []);
         if (call !== -1) {
-          nestedShellString(call);
+          analyzeCall(call);
           return undefined;
         }
         break;
@@ -963,6 +1042,11 @@ export class CommandChecker {
     return name === 'command' &&
       values.slice(0, commandIndex).some((value) => value === '-v' || value === '-V')
       ? undefined
-      : invoke(commandIndex);
+      : invoke(
+          commandIndex,
+          context,
+          false,
+          PACKAGE_SPEC_RUNNERS.has(name) && isPackageSpecAt(0, commandIndex),
+        );
   }
 }

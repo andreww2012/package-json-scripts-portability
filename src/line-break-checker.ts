@@ -18,7 +18,8 @@ const isDropped = (issue: RunnerIssue) => issue.platforms.length === 0;
 /** Checks line breaks, after which cmd.exe ignores the rest of the script */
 export class LineBreakChecker {
   /**
-   * The issue of the last line break reported in each source, to report one per source.
+   * The issue of the last line break reported in each script, by where the script is and its
+   * source, to report one per script, e.g. per script of `concurrently` even if they're the same.
    * The ones reported before it were dropped, or it wouldn't be reported
    */
   readonly #lastIssues = new Map<string, RunnerIssue>();
@@ -104,7 +105,8 @@ export class LineBreakChecker {
   ) {
     const lineBreak = {end: position + 1, pos: position};
     const range = rangeInScript(context, lineBreak);
-    const lastIssue = this.#lastIssues.get(context.source);
+    const scriptKey = `${context.offset} ${context.fixedRange?.pos ?? ''} ${context.source}`;
+    const lastIssue = this.#lastIssues.get(scriptKey);
     if ((lastIssue && !isDropped(lastIssue)) || this.#isOverlapReported(range)) {
       return;
     }
@@ -126,7 +128,7 @@ export class LineBreakChecker {
       return;
     }
 
-    this.#lastIssues.set(context.source, issue);
+    this.#lastIssues.set(scriptKey, issue);
     this.#lineBreaks.splice(
       sortedArrayInsertionIndexWith(this.#lineBreaks, (reported) => reported.range.pos < range.pos),
       0,

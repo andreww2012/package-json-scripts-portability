@@ -101,8 +101,13 @@ const BSD_LONG_OPTIONS: ReadonlyMap<string, readonly string[]> = new Map([
 ]);
 /** Any option, e.g. `-p` */
 const POSIX_OPTION = /^-./;
-/** A cmd.exe option, e.g. `/s` */
-const CMD_OPTION = /^\/[a-z]/i;
+
+/**
+ * Switches of cmd.exe's `dir`, also combined or turned off with `-`, e.g. `/b`, `/a:-d`, `/o-n` or
+ * `/b/s`, unlike paths like `/usr/lib`
+ */
+const DIR_CMD_OPTION =
+  /^(?:\/-?(?:[4bcdlnp-swx]|a:?(?:-?[adhilors])*|o:?(?:-?[degns])*|t:?[acw]?))+$/i; // cspell:disable-line
 /** Including combined switches, e.g. `/s/q` */
 const RMDIR_CMD_OPTION = /^(?:\/[qs])+$/i;
 const EXIT_CMD_OPTION = /^\/b$/i;
@@ -119,7 +124,15 @@ const NEGATIVE_NUMBER = /^-\d/;
  * cluster as its value, like `-e` (a script) or `-i` (a backup suffix)
  */
 const SED_EXTENDED_OPTION = /^-(?:(?![Iefil])[A-Za-z])*[Er]/; // cspell:disable-line
-const SED_IN_PLACE_OPTION = /^-[a-z]*i$/i;
+/** `-i` without a suffix, also in a cluster like `-ni`, but not as the value of `-e`, like in `-ei` */
+const SED_IN_PLACE_OPTION = /^-(?:(?![Iefil])[A-Za-z])*[Ii]$/; // cspell:disable-line
+/** Options of `sed` that take the next argument as their value, e.g. `-e` or `-ne` */
+const SED_VALUE_OPTION = /^(?:-(?:(?![Iefil])[A-Za-z])*[ef]|--(?:expression|file))$/; // cspell:disable-line
+/** `-P`, also in a cluster like `-oP`, but not as the value of an option, like in `-eP` */
+const GREP_PERL_OPTION = /^(?:-(?:(?![A-DPd-fm])[A-Za-z])*P[A-Za-z]*|--perl-regexp)$/;
+/** Options of `grep` that take the next argument as their value, e.g. `-e` or `-ie` */
+const GREP_VALUE_OPTION =
+  /^(?:-(?:(?![A-Dd-fm])[A-Za-z])*[A-Dd-fm]|--(?:after-context|before-context|binary-files|context|devices|directories|exclude|exclude-dir|exclude-from|file|include|label|max-count|regexp))$/;
 /** `set -o`, possibly after other options, e.g. `set -euo` */
 const SET_NAMED_OPTION = /^-[a-z]*o$/i;
 const SET_SHELL_OPTIONS = /^[+-][a-z]+$/i;
@@ -149,6 +162,20 @@ export const checkCommandUsage = (
       (value, index) => index < optionsEnd && value != null && isMatch(value, index),
     );
 
+  /**
+   * Gets the arguments that are values of options, which aren't options themselves, e.g. `-P` in
+   * `grep -e -P`.
+   * @param valueOption Options that take the next argument as their value
+   * @returns Indexes of the values
+   */
+  const optionValueIndexes = (valueOption: RegExp) =>
+    values.reduce((indexes, value, index) => {
+      if (value != null && index < optionsEnd && !indexes.has(index) && valueOption.test(value)) {
+        indexes.add(index + 1);
+      }
+      return indexes;
+    }, new Set<number>());
+
   const report = (
     index: number,
     platforms: readonly Platform[],
@@ -176,7 +203,7 @@ export const checkCommandUsage = (
     }
   };
   const reportOption = (
-    isMatch: (value: string) => boolean,
+    isMatch: (value: string, index: number) => boolean,
     platforms: readonly Platform[],
     data: {reason: string; suggestion: string},
   ) => {
@@ -291,7 +318,7 @@ export const checkCommandUsage = (
     }
 
     case 'dir': {
-      const index = optionIndex((value) => CMD_OPTION.test(value));
+      const index = optionIndex((value) => DIR_CMD_OPTION.test(value));
       if (index !== -1) {
         report(index, LINUX_PLATFORMS, {
           reason: `\`${values[index] || ''}\` is a cmd.exe option`,
@@ -375,8 +402,9 @@ export const checkCommandUsage = (
     }
 
     case 'grep': {
+      const optionValues = optionValueIndexes(GREP_VALUE_OPTION);
       reportOption(
-        (value) => isShortOptionCluster(value, 'P') || value === '--perl-regexp',
+        (value, index) => !optionValues.has(index) && GREP_PERL_OPTION.test(value),
         MACOS_PLATFORMS,
         {
           reason: "BSD `grep` doesn't support Perl-compatible regular expressions",
@@ -476,7 +504,10 @@ export const checkCommandUsage = (
         });
       }
 
-      const index = optionIndex((value) => SED_IN_PLACE_OPTION.test(value));
+      const optionValues = optionValueIndexes(SED_VALUE_OPTION);
+      const index = optionIndex(
+        (value, valueIndex) => !optionValues.has(valueIndex) && SED_IN_PLACE_OPTION.test(value),
+      );
       if (index === -1) {
         break;
       }
@@ -589,8 +620,10 @@ export const checkCommandUsage = (
           suggestion: NODE_SCRIPT_SUGGESTION,
         });
       } else {
-        // GNU coreutils' `timeout` doesn't exist on macOS, and Windows' `timeout` is unrelated
-        reportCommand(NOT_MACOS_OR_WINDOWS, NODE_SCRIPT_SUGGESTION);
+        reportCommand(
+          NOT_MACOS_OR_WINDOWS,
+          "Older macOS versions don't have it, and Windows' `timeout` only waits; use a Node.js script instead.",
+        );
       }
       break;
     }

@@ -15,6 +15,8 @@ import {POSIX_PATH, WHITESPACE, staticValue} from './words.ts';
 
 /** The target of a redirection that duplicates or closes a file descriptor, e.g. `1` or `-` */
 const DESCRIPTOR = /^(?:\d+|-)$/;
+/** The target of a redirection that moves a file descriptor, e.g. `3-` */
+const MOVED_DESCRIPTOR = /^\d+-$/;
 /** Device names, which cmd.exe treats as the device in any directory */
 const WINDOWS_DEVICES: ReadonlySet<string> = new Set(['aux', 'con', 'nul', 'prn']);
 /** Redirection operators that write the standard output to a file, e.g. `>` */
@@ -30,6 +32,11 @@ const OUTPUT_OPERATORS: ReadonlySet<RedirectOperator> = new Set([
 /** Checks whether a redirection is of the standard output, e.g. `>` or `1>`, but not `2>` */
 const isOfStandardOutput = ({descriptor}: Redirection) =>
   descriptor == null || (descriptor.type === 'FileDescriptor' && descriptor.value === 1);
+
+/** Checks whether a redirection is of the standard output or error, e.g. `2>`, but not `3>` */
+const isOfStandardStream = (redirection: Redirection) =>
+  isOfStandardOutput(redirection) ||
+  (redirection.descriptor?.type === 'FileDescriptor' && redirection.descriptor.value === 2);
 
 /**
  * Checks whether a redirection writes the standard output to a file, e.g. `> out.log`, but not
@@ -182,6 +189,15 @@ export class RedirectionChecker {
           if (target != null && DESCRIPTOR.test(target)) {
             return;
           }
+          // Bash's shorthand for duplicating a descriptor and closing it, e.g. `>&3 3>&-`
+          if (target != null && MOVED_DESCRIPTOR.test(target)) {
+            const descriptorNumber = target.slice(0, -1);
+            this.#reporter.reportSyntax(context, redirection, 'bash', false, 'unsupportedSyntax', {
+              suggestion: `Use \`${truncate(text.slice(0, -1))} ${descriptorNumber}>&-\` instead.`,
+              syntax: `The Bash-specific \`${truncate(text)}\` file descriptor move`,
+            });
+            return;
+          }
           // Bash's shorthand for `> file 2>&1`
           if (operator === '>&' && target != null) {
             this.#reporter.reportSyntax(
@@ -238,10 +254,12 @@ export class RedirectionChecker {
     }
 
     // Without the redirection, the output appears in the terminal instead, unless the command's
-    // output goes into a pipe or a file, e.g. in `a > /dev/null | b`
+    // output goes into a pipe or a file, e.g. in `a > /dev/null | b`. Other descriptors would be
+    // closed instead, e.g. in `a 3> /dev/null`
     const doesDiscardOutput =
       !isWholeCommand &&
       (redirection.operator === '>' || redirection.operator === '>>') &&
+      isOfStandardStream(redirection) &&
       target === '/dev/null' &&
       !(context.outputRedirected && isOfStandardOutput(redirection));
 

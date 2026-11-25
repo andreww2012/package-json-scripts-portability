@@ -192,6 +192,40 @@ describe('analyzeScript', () => {
           ['unsupportedUsage', 'rm --recursive', 'darwin'],
         ],
       ],
+      // The values of options aren't options
+      ['grep -e -P f', [['unsupportedCommand', 'grep', 'win32']]],
+      ['grep -eP f', [['unsupportedCommand', 'grep', 'win32']]],
+      ['grep --regexp -P f', [['unsupportedCommand', 'grep', 'win32']]],
+      ['sed -ei s/a/b/ f', [['unsupportedCommand', 'sed', 'win32']]],
+      ['sed -e -i f', [['unsupportedCommand', 'sed', 'win32']]],
+      [
+        'grep -oP x f',
+        [
+          ['unsupportedCommand', 'grep', 'win32'],
+          ['unsupportedUsage', 'grep -oP', 'darwin'],
+        ],
+      ],
+      [
+        'grep -e x -P f',
+        [
+          ['unsupportedCommand', 'grep', 'win32'],
+          ['unsupportedUsage', 'grep -e x -P', 'darwin'],
+        ],
+      ],
+      [
+        'sed -ni s/a/b/ f',
+        [
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['unsupportedUsage', 'sed -ni', 'darwin'],
+        ],
+      ],
+      [
+        'sed -e s/a/b/ -i f',
+        [
+          ['unsupportedCommand', 'sed', 'win32'],
+          ['unsupportedUsage', 'sed -e s/a/b/ -i', 'darwin'],
+        ],
+      ],
       [
         'sed -i s/a/b/ file',
         [
@@ -329,6 +363,15 @@ describe('analyzeScript', () => {
         usage: 'timeout 5',
       });
     });
+
+    // Recent macOS versions ship a `timeout` that works like GNU's
+    it('explains the report of `timeout` on macOS', () => {
+      expect(analyzeScript('timeout 5 node x')[0]?.data).toStrictEqual({
+        command: 'timeout',
+        suggestion:
+          "Older macOS versions don't have it, and Windows' `timeout` only waits; use a Node.js script instead.",
+      });
+    });
   });
 
   describe('syntax of POSIX shells', () => {
@@ -428,6 +471,23 @@ describe('analyzeScript', () => {
       // Nor are `;` and a comment
       ['(cd a && b);', [['unsupportedSyntax', ';', 'win32']]],
       ['(cd a && b) # done', [['unsupportedSyntax', '# done', 'win32']]],
+      // Nor are a background `&` that ends the script, and commands that don't use the directory
+      ['(cd a && b) &', [['inconsistentBehavior', '&', 'win32']]],
+      ['(cd a && b) || exit 1', []],
+      ['(cd a && b) || exit', []],
+      ['(cd a && b) && true', [['unsupportedCommand', 'true', 'win32']]],
+      ['(cd a && b) || false', [['unsupportedCommand', 'false', 'win32']]],
+      ['(cd a && b) || :', [['unsupportedCommand', ':', 'win32']]],
+      [
+        '(cd a && b) & c',
+        [
+          ['inconsistentBehavior', '(cd a && b)', 'win32'],
+          ['inconsistentBehavior', '&', 'win32'],
+        ],
+      ],
+      ['(cd a && b) | c', [['inconsistentBehavior', '(cd a && b)', 'win32']]],
+      ['(cd a && b) || exit 1 && c', [['inconsistentBehavior', '(cd a && b)', 'win32']]],
+      ['(cd a && b) || exit 1x', [['inconsistentBehavior', '(cd a && b)', 'win32']]],
       [
         '(cd a && b); c',
         [
@@ -756,6 +816,22 @@ describe('analyzeScript', () => {
       ['chokidar "src" -c "rm -rf dist"', []],
       ['npx -c "rm -rf dist"', [['unsupportedCommand', 'rm', 'win32']]],
       ['npm exec -c "rm -rf dist"', [['unsupportedCommand', 'rm', 'win32']]],
+      // The attached form of `--call`
+      [
+        "npx --call='rm -rf x'",
+        [
+          ['inconsistentBehavior', "'rm -rf x'", 'win32'],
+          ['unsupportedCommand', 'rm', 'win32'],
+        ],
+      ],
+      ['npx --call="rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      ['npm exec --call=true', [['unsupportedCommand', 'true', 'win32']]],
+      ['upm exec --yes --call="rm -rf x"', [['unsupportedCommand', 'rm', 'win32']]],
+      // Positions in a script with escapes can't be mapped, so the script is reported
+      [
+        String.raw`npx --call="rm -rf \"a b\""`,
+        [['unsupportedCommand', String.raw`"rm -rf \"a b\""`, 'win32']],
+      ],
       ['c8 mocha ./test/*.mjs', []],
       ['c8 --reporter lcov rm -rf dist', []],
       ['nyc --reporter=lcov mocha test/*.js', []],
@@ -1449,7 +1525,12 @@ describe('analyzeScript', () => {
       ['node x 2>&1 | tee-cli log', []],
       ['node x >&2', []],
       ['node x 1>&-', []],
+      // Bash's descriptor move, which dash doesn't support
+      ['node x >&3-', [['unsupportedSyntax', '>&3-', 'linux,win32']]],
+      ['node x 2>&3-', [['unsupportedSyntax', '2>&3-', 'linux,win32']]],
+      ['node x <&3-', [['unsupportedSyntax', '<&3-', 'linux,win32']]],
       ['node x 2> /dev/null', [['unsupportedSyntax', '/dev/null', 'win32']]],
+      ['node x 3> /dev/null', [['unsupportedSyntax', '/dev/null', 'win32']]],
       ['node x >/dev/stderr', [['unsupportedSyntax', '/dev/stderr', 'win32']]],
       ['node x > NUL', [['inconsistentBehavior', 'NUL', 'darwin,linux']]],
       ['node x &>> log', [['unsupportedSyntax', '&>> log', 'darwin,linux,win32']]],
@@ -1486,6 +1567,25 @@ describe('analyzeScript', () => {
       ],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    it.each<[string, Record<string, string>]>([
+      [
+        'node x >&3-',
+        {
+          suggestion: 'Use `>&3 3>&-` instead.',
+          syntax: 'The Bash-specific `>&3-` file descriptor move',
+        },
+      ],
+      [
+        'node x 2>&3-',
+        {
+          suggestion: 'Use `2>&3 3>&-` instead.',
+          syntax: 'The Bash-specific `2>&3-` file descriptor move',
+        },
+      ],
+    ])('explains the descriptor move in %j without a fix', (script, data) => {
+      expect(analyzeScript(script)).toMatchObject([{data, fix: undefined}]);
     });
   });
 
@@ -1772,6 +1872,14 @@ describe('analyzeScript', () => {
       ['rm -rf dist || IF EXIST dist rd /s /q dist', []],
       ['rm -rf \'a b\' || rd /s /q "a b"', []],
       ['sleep 5 || timeout 5', []],
+      // cmd.exe's `type` is the Windows alternative of `cat`
+      ['cat f || type f', []],
+      ['type f || cat f', []],
+      // A failure only counts if it makes the alternative fail
+      ['(rm -rf a && tsc) || rd /s /q a', []],
+      ['(tsc; rm -rf a) || rd /s /q a', []],
+      ['tsc && rm -rf x || rd /s /q x', []],
+      ['(rm -rf a || tsc && rm -rf b) || rd /s /q b', []],
       // Only commands make an alternative fail, not their arguments
       [
         'tsc --outDir $OUT || rd /s /q out',
@@ -1799,6 +1907,33 @@ describe('analyzeScript', () => {
       ['rm -rf dist || rmdir /s /q dist || true', [['unsupportedCommand', 'true', 'win32']]],
       // Not an alternative for another platform
       ['rm -rf dist || echo failed', [['unsupportedCommand', 'rm', 'win32']]],
+      ['type f || echo failed', [['inconsistentBehavior', 'type', 'darwin,linux,win32']]],
+      // The last command decides whether a group fails, and an `if` statement succeeds when its
+      // condition fails
+      [
+        '(rm -rf a; tsc) || rd /s /q a',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['unsupportedSyntax', ';', 'win32'],
+          ['unsupportedCommand', 'rd', 'darwin,linux'],
+        ],
+      ],
+      [
+        '(rm -rf a &) || rd /s /q a',
+        [
+          ['unsupportedCommand', 'rm', 'win32'],
+          ['inconsistentBehavior', '&', 'win32'],
+          ['unsupportedCommand', 'rd', 'darwin,linux'],
+        ],
+      ],
+      [
+        "if source env.sh; then a; fi || sh -c 'x'",
+        [
+          ['unsupportedSyntax', 'if', 'win32'],
+          ['unsupportedCommand', 'source', 'linux'],
+          ['unsupportedCommand', 'sh', 'win32'],
+        ],
+      ],
       // Alternatives that aren't a fallback don't hide one that follows them
       [
         'rm -rf a || rm -rf b && rm -rf c || rd /s /q c',
@@ -2438,8 +2573,21 @@ describe('analyzeScript', () => {
       ],
       // Reported once, for the outer script
       ['concurrently "tsc\nvite"', [['unsupportedSyntax', '\n', 'win32']]],
-      // Once per source
-      ['concurrently "tsc\nvite" "tsc\nvite"', [['unsupportedSyntax', '\n', 'win32']]],
+      // Once per script, even if the scripts are the same
+      [
+        'concurrently "tsc\nvite" "tsc\nvite"',
+        [
+          ['unsupportedSyntax', '\n', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
+      [
+        'concurrently "a\nb\nc" "a\nb\nc"',
+        [
+          ['unsupportedSyntax', '\n', 'win32'],
+          ['unsupportedSyntax', '\n', 'win32'],
+        ],
+      ],
       [
         'concurrently "tsc\nvite" "jest\nvite"',
         [
@@ -2573,8 +2721,36 @@ describe('analyzeScript', () => {
         [['unsupportedSyntax', './node_modules/.bin/eslint', 'win32']],
       ],
       ['cross-env A=1 ./scripts/build.sh', [['unsupportedCommand', './scripts/build.sh', 'win32']]],
+      // Package managers read package specs themselves
+      ['npx ./packages/cli --help', []],
+      ['npx ./local.js', []],
+      ['npx user/repo', []],
+      ['npx -y user/repo', []],
+      ['npm exec ./local-pkg', []],
+      ['npm x -- user/repo', []],
+      ['pnpm dlx ./local-pkg', []],
+      ['pnpx user/repo', []],
+      ['yarn dlx user/repo', []],
+      ['bunx ./local-pkg', []],
+      ['bun x user/repo', []],
+      ['aubx user/repo', []],
+      ['aube dlx user/repo', []],
+      ['upx user/repo', []],
+      ['upm exec user/repo', []],
+      // Unlike the commands of `--package` and of commands that run a command
+      ['npx -p typescript ./bin/x', [['unsupportedSyntax', './bin/x', 'win32']]],
+      ['npx --package=typescript ./bin/x', [['unsupportedSyntax', './bin/x', 'win32']]],
+      ['pnpm exec ./x.js', [['unsupportedSyntax', './x.js', 'win32']]],
+      ['yarn exec ./x', [['unsupportedSyntax', './x', 'win32']]],
+      ['aube exec ./x', [['unsupportedSyntax', './x', 'win32']]],
     ])('%j', (script, expected) => {
       expect(summarize(script)).toStrictEqual(expected);
+    });
+
+    it.each(['xargs', 'sudo'])('reports the path of the command that `%s` runs', (command) => {
+      expect(summarize(`${command} ./x.js`, {ignoreCommands: [command]})).toStrictEqual([
+        ['unsupportedSyntax', './x.js', 'win32'],
+      ]);
     });
 
     // Yarn v1 replaces `/` with `\` in the script's command names on Windows
@@ -3201,6 +3377,23 @@ describe('analyzeScript', () => {
           ['unsupportedUsage', 'dir /b', 'linux'],
         ],
       ],
+      [
+        'dir /a:-d /o-n',
+        [
+          ['unsupportedCommand', 'dir', 'darwin'],
+          ['unsupportedUsage', 'dir /a:-d', 'linux'],
+        ],
+      ],
+      [
+        'dir /s/b',
+        [
+          ['unsupportedCommand', 'dir', 'darwin'],
+          ['unsupportedUsage', 'dir /s/b', 'linux'],
+        ],
+      ],
+      // Absolute paths aren't cmd.exe options
+      ['dir /usr/lib', [['unsupportedCommand', 'dir', 'darwin']]],
+      ['dir /home /tmp /data', [['unsupportedCommand', 'dir', 'darwin']]],
       // Linux finds commands by their exact name
       ['DIR /b', [['unsupportedCommand', 'DIR', 'darwin,linux']]],
       ['wget https://example.com', [['unsupportedCommand', 'wget', 'darwin,win32']]],
@@ -3386,8 +3579,17 @@ describe('analyzeScript', () => {
       // Commands
       ['rm -rf dist', [['rm', 'Replace `rm -rf` with `rimraf`.', 'rimraf dist']]],
       ['rm -r -f a b', [['rm', 'Replace `rm -r -f` with `rimraf`.', 'rimraf a b']]],
-      ['rm dist.zip', [['rm', 'Replace `rm` with `rimraf`.', 'rimraf dist.zip']]],
       ['rm -rf -- dist', [['rm', 'Replace `rm -rf` with `rimraf`.', 'rimraf -- dist']]],
+      ['rm -fr dist', [['rm', 'Replace `rm -fr` with `rimraf`.', 'rimraf dist']]],
+      ['rm -Rf dist', [['rm', 'Replace `rm -Rf` with `rimraf`.', 'rimraf dist']]],
+      [
+        'rm --recursive --force dist',
+        [['rm', 'Replace `rm --recursive --force` with `rimraf`.', 'rimraf dist']],
+      ],
+      [
+        'rm -f --recursive dist',
+        [['rm', 'Replace `rm -f --recursive` with `rimraf`.', 'rimraf dist']],
+      ],
       [
         'rm -rf dist/* .cache',
         [
@@ -3434,10 +3636,6 @@ describe('analyzeScript', () => {
           ],
         ],
       ],
-      [
-        './scripts/build.mjs --watch',
-        [['./scripts/build.mjs', 'Run the file with `node`.', 'node ./scripts/build.mjs --watch']],
-      ],
       // The binary's name may run the binary of another package there
       ['cd packages/a && ./node_modules/.bin/tsc', []],
       ['pushd a && ./node_modules/.bin/tsc', []],
@@ -3463,10 +3661,6 @@ describe('analyzeScript', () => {
             'pnpm -C dir exec tsc',
           ],
         ],
-      ],
-      [
-        'cd a && ./build.js',
-        [['./build.js', 'Run the file with `node`.', 'cd a && node ./build.js']],
       ],
 
       // Assignments
@@ -3866,9 +4060,103 @@ describe('analyzeScript', () => {
       'node x <<< {a,b}',
       // Bash expands the whole assignment, e.g. to `A=a A=b`
       'export A={a,b}',
+      // `rimraf` deletes directories and ignores missing paths, unlike `rm` without `-r` and `-f`
+      'rm dist.zip',
+      'rm -f .eslintcache',
+      'rm -r build',
+      'rm -R -- build',
+      'rm --force dist',
+      'rm -f dist/*',
+      'rm dist/*.log && deploy',
+      // The file's shebang may run it with something else than `node`
+      './build.mjs --watch',
+      'cd a && ./build.js',
+      // Removing the redirection would close the descriptor instead
+      'node x 3> /dev/null',
+      'node x 4>> /dev/null',
+      // Bash's descriptor move
+      'node x >&3-',
     ])('%j', (script) => {
       expect(summarizeFixes(script)).toStrictEqual([]);
     });
+
+    it.each([
+      '{ : ${X:=1}; } && echo $X',
+      '{ : ${X=1}; } && echo $X',
+      '{ echo "${X:-${Y:=1}}"; } && echo $Y',
+      '{ echo $((x=1)); } && echo $x',
+      '{ echo $((x+=1)); } && echo $x',
+      '{ echo $((x++)); } && echo $x',
+      '{ echo $((--x)); } && echo $x',
+      '{ tsc; } > ${LOG:=log} && echo $LOG',
+    ])("doesn't replace `{ ... }` with `( ... )` when it assigns variables in %j", (script) => {
+      expect(
+        analyzeScript(script).filter(
+          (issue) => issue.fix?.description === 'Replace `{ ... }` with `( ... )`.',
+        ),
+      ).toStrictEqual([]);
+    });
+
+    it.each([
+      '{ echo $((x + 1)); } && b',
+      '{ echo ${X:-1}; } && b',
+      // A command substitution runs in a subshell
+      '{ echo $(: ${X:=1}); } && b',
+    ])('replaces `{ ... }` with `( ... )` in %j', (script) => {
+      expect(
+        analyzeScript(script).filter(
+          (issue) => issue.fix?.description === 'Replace `{ ... }` with `( ... )`.',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      'export A=* && echo -',
+      'export A=1 B=* && node x',
+      'rm -rf dist/* .cache/*',
+      'tsc &> log',
+    ])(
+      "applies the fixes of %j in any order of their edits, which don't share offsets",
+      (script) => {
+        const fixes = analyzeScript(script).flatMap((issue) => (issue.fix ? [issue.fix] : []));
+
+        expect(fixes).not.toHaveLength(0);
+
+        fixes.forEach((fix) => {
+          const edits = fix.edits.toSorted((left, right) => left.pos - right.pos);
+          edits.slice(1).forEach((edit, index) => {
+            expect(edit.pos).toBeGreaterThan(edits[index]?.end ?? -1);
+          });
+
+          expect(applyFix(script, {...fix, edits: fix.edits.toReversed()})).toBe(
+            applyFix(script, fix),
+          );
+        });
+      },
+    );
+
+    it('quotes the values of `export ... &&` in its fix', () => {
+      expect(summarizeFixes('export A=* && echo -')).toStrictEqual([
+        ['export', 'Replace `export ... &&` with `cross-env`.', 'cross-env A="*" echo -'],
+      ]);
+    });
+
+    it('fixes the attached script of `--call`', () => {
+      expect(summarizeFixes("npx --call='rm -rf x'")).toStrictEqual([
+        ["'rm -rf x'", 'Use escaped double quotes instead.', 'npx --call="rm -rf x"'],
+        ['rm', 'Replace `rm -rf` with `rimraf`.', "npx --call='rimraf x'"],
+      ]);
+    });
+  });
+
+  it('uses the default options for `null`', () => {
+    expect(
+      summarize(
+        'rm -rf x',
+        // eslint-disable-next-line un/no-type-assertion -- JavaScript callers may pass `null`, which the types don't allow
+        null as unknown as undefined,
+      ),
+    ).toStrictEqual([['unsupportedCommand', 'rm', 'win32']]);
   });
 
   it('truncates long snippets', () => {
