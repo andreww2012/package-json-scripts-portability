@@ -396,6 +396,39 @@ export const EXACT_NAME_BUILTINS: ReadonlySet<string> = new Set([
   'wait',
 ]);
 
+/** Builtins of both dash and Bash, i.e. of `sh` on Linux and macOS */
+export const POSIX_SHELL_BUILTINS: ReadonlySet<string> = new Set([
+  '.',
+  ':',
+  '[',
+  'alias',
+  'bg',
+  'command',
+  'eval',
+  'exec',
+  'export',
+  'false',
+  'fg',
+  'getopts',
+  'hash',
+  'jobs',
+  'kill',
+  'local',
+  'printf',
+  'pwd',
+  'read',
+  'readonly',
+  'return',
+  'shift',
+  'test',
+  'trap',
+  'true',
+  'ulimit',
+  'umask',
+  'unset',
+  'wait',
+]);
+
 /** cmd.exe builtins (rather than executables), which Yarn's portable shell can't run on Windows */
 export const CMD_BUILTINS: ReadonlySet<string> = new Set([
   'assoc',
@@ -479,6 +512,33 @@ export const OS_COMMANDS: ReadonlySet<string> = new Set([
   'rmdir',
   'sort',
   'timeout',
+]);
+
+/**
+ * Well-known programs that aren't npm packages or OS commands, and don't expand globs in their
+ * arguments themselves, e.g. `tar`
+ */
+export const NON_GLOB_PROGRAMS: ReadonlySet<string> = new Set([
+  'bun',
+  'cargo',
+  'curl',
+  'deno',
+  'docker',
+  'git',
+  'go',
+  'java',
+  'kubectl',
+  'make',
+  'node',
+  'perl',
+  'php',
+  'podman',
+  'python',
+  'python3',
+  'ruby',
+  'scp',
+  'ssh',
+  'tar',
 ]);
 
 /** Package manager subcommands that run the command given as their arguments */

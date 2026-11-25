@@ -302,6 +302,16 @@ describe('analyzeScript', () => {
       ['TIMEOUT /T 5', [['unsupportedUsage', 'TIMEOUT /T', 'darwin,linux']]],
       ['timeout /nobreak /t 10', [['unsupportedUsage', 'timeout /nobreak', 'darwin,linux']]],
       ['TIMEOUT /NOBREAK /T 10', [['unsupportedUsage', 'TIMEOUT /NOBREAK', 'darwin,linux']]],
+      // GNU `timeout` fails without a command, unlike cmd.exe's
+      ['timeout 5', [['unsupportedUsage', 'timeout 5', 'darwin,linux']]],
+      [
+        'timeout 5 > nul',
+        [
+          ['unsupportedUsage', 'timeout 5', 'darwin,linux'],
+          ['inconsistentBehavior', 'nul', 'darwin,linux'],
+        ],
+      ],
+      ['timeout -s KILL 5', [['unsupportedUsage', 'timeout -s KILL 5', 'darwin,linux']]],
       ['exit /b 1', [['unsupportedUsage', 'exit /b', 'darwin,linux']]],
       ['exit 1', []],
     ])('%s', (script, expected) => {
@@ -310,6 +320,14 @@ describe('analyzeScript', () => {
 
     it('only considers options before --', () => {
       expect(summarize('rm -- --recursive')).toStrictEqual([['unsupportedCommand', 'rm', 'win32']]);
+    });
+
+    it('explains the report of `timeout` without a command', () => {
+      expect(analyzeScript('timeout 5')[0]?.data).toStrictEqual({
+        reason: "only Windows' `timeout` works without a command",
+        suggestion: 'Use a Node.js script instead.',
+        usage: 'timeout 5',
+      });
     });
   });
 
@@ -470,7 +488,7 @@ describe('analyzeScript', () => {
         'exec {fd}>log',
         [
           ['unsupportedCommand', 'exec', 'win32'],
-          ['unsupportedSyntax', '{fd}', 'linux,win32'],
+          ['unsupportedSyntax', '{fd}', 'darwin,linux,win32'],
         ],
       ],
       ['eslint @(src|test)', [['unsupportedSyntax', '@(src|test)', 'darwin,linux,win32']]],
@@ -574,6 +592,11 @@ describe('analyzeScript', () => {
       [
         String.raw`node "dist\cli\index"`,
         [['inconsistentBehavior', String.raw`"dist\cli\index"`, 'darwin,linux']],
+      ],
+      // It may be a regex or a path like `src\sub\dir`
+      [
+        String.raw`jest -t "adds\stwo\snumbers"`,
+        [['inconsistentBehavior', String.raw`"adds\stwo\snumbers"`, 'darwin,linux']],
       ],
       [String.raw`grep "a\.b" file`, [['unsupportedCommand', 'grep', 'win32']]],
       [String.raw`echo "done\n"`, []],
@@ -951,6 +974,7 @@ describe('analyzeScript', () => {
     it.each<[string, Record<string, string>]>([
       ['pushd a', {command: 'pushd', suggestion: 'Use a Node.js script instead.'}],
       ['set A=1', {command: 'set', suggestion: 'Use `cross-env` instead.'}],
+      ['type a.txt', {command: 'type', suggestion: 'Use a Node.js script instead.'}],
       [
         'echo $UID',
         {
@@ -1747,6 +1771,7 @@ describe('analyzeScript', () => {
       [String.raw`.\prepare.bat || ./prepare`, []],
       ['rm -rf dist || IF EXIST dist rd /s /q dist', []],
       ['rm -rf \'a b\' || rd /s /q "a b"', []],
+      ['sleep 5 || timeout 5', []],
       // Only commands make an alternative fail, not their arguments
       [
         'tsc --outDir $OUT || rd /s /q out',
@@ -2340,6 +2365,15 @@ describe('analyzeScript', () => {
         {runnerAgnosticScripts: {}, scriptName: 'constructor'},
         [],
       ],
+      [
+        'keep the defaults with `null`',
+        {
+          // eslint-disable-next-line un/no-type-assertion -- JavaScript callers may pass `null`, which the types don't allow
+          runnerAgnosticScripts: null as unknown as undefined,
+          scriptName: 'postinstall',
+        },
+        [homeIssue],
+      ],
     ])('%s', (_, options, expected) => {
       expect(summarizeRunners(SCRIPT, {...options, runner: 'npm'})).toStrictEqual(expected);
     });
@@ -2487,6 +2521,22 @@ describe('analyzeScript', () => {
       ],
       ['\ntsc', [['\n', 'Join the lines.', ' tsc']]],
       ['(\n  tsc\n)', [['\n', 'Join the lines.', '( tsc\n)']]],
+      // Without the carriage return, it's the line break after `&&` above, which can be joined
+      ['tsc &&\r\n  vite build', [['\r', 'Remove the carriage return.', 'tsc &&\n  vite build']]],
+      ['tsc |\r\n tee log', [['\r', 'Remove the carriage return.', 'tsc |\n tee log']]],
+      ['a &\r\nb', [['\r', 'Remove the carriage return.', 'a &\nb']]],
+      // Both fixes together give `tsc && vite build`
+      [
+        'tsc\r\nvite build',
+        [
+          ['\r', 'Remove the carriage return.', 'tsc\nvite build'],
+          [
+            '\n',
+            'Replace the line break with `&&`, which stops at the first failing command.',
+            'tsc\r && vite build',
+          ],
+        ],
+      ],
     ])('fixes %j', (script, expected) => {
       expect(summarizeFixes(script)).toStrictEqual(expected);
     });
@@ -2670,6 +2720,13 @@ describe('analyzeScript', () => {
           ],
         ],
         ['echo ${x@Q}', [['unsupportedSyntax', '${x@Q}', 'darwin,linux,win32']]],
+        [
+          'bash -c "exec {fd}>log"',
+          [
+            ['unsupportedCommand', 'bash', 'win32'],
+            ['unsupportedSyntax', '{fd}', 'darwin'],
+          ],
+        ],
         // Bash only disables process substitution in POSIX mode
         ["bash -c 'diff <(a) <(b)'", [['unsupportedCommand', 'bash', 'win32']]],
         [
@@ -2832,6 +2889,14 @@ describe('analyzeScript', () => {
           ],
         ],
         ['[ a = b ] && node x', [['unsupportedCommand', '[', 'win32']]],
+        // A quoted `==` is an operand
+        [
+          '[ "$op" = "==" ]',
+          [
+            ['unsupportedCommand', '[', 'win32'],
+            ['unsupportedSyntax', '$op', 'win32'],
+          ],
+        ],
         ["bash -c '[ a == b ]'", [['unsupportedCommand', 'bash', 'win32']]],
         [
           'set -euo pipefail',
@@ -2852,7 +2917,7 @@ describe('analyzeScript', () => {
           'trap "RC=1" ERR',
           [
             ['unsupportedCommand', 'trap', 'win32'],
-            ['inconsistentBehavior', 'trap "RC=1" ERR', 'linux'],
+            ['unsupportedUsage', 'trap "RC=1" ERR', 'linux'],
           ],
         ],
         ['trap "rm -f tmp" EXIT', [['unsupportedCommand', 'trap', 'win32']]],
@@ -2913,6 +2978,15 @@ describe('analyzeScript', () => {
         ['node x 2>&1 >&2', []],
       ])('%j', (script, expected) => {
         expect(summarize(script)).toStrictEqual(expected);
+      });
+
+      // dash fails on it, so the commands after `&&` don't run
+      it('explains the report of `trap ... ERR`', () => {
+        expect(analyzeScript('trap "RC=1" ERR && node x').at(-1)?.data).toStrictEqual({
+          reason: "dash, the `sh` of Debian/Ubuntu, doesn't support the `ERR` condition",
+          suggestion: 'Use a Node.js script instead.',
+          usage: 'trap ... ERR',
+        });
       });
     });
 
@@ -3046,7 +3120,8 @@ describe('analyzeScript', () => {
         ['set NODE_ENV=production&& node x', [['unsupportedCommand', 'set', 'darwin,linux,win32']]],
         ['[ a == b ] && node x', [['unsupportedCommand', '[', 'win32']]],
         ['rem node build.js', [['unsupportedCommand', 'rem', 'darwin,linux,win32']]],
-        ['type node', []],
+        // It can't run cmd.exe's `type` on Windows
+        ['type node', [['unsupportedCommand', 'type', 'win32']]],
         [
           String.raw`node "scripts\build.js"`,
           [['inconsistentBehavior', String.raw`"scripts\build.js"`, 'darwin,linux']],
@@ -3201,6 +3276,14 @@ describe('analyzeScript', () => {
       ['cross-env A=1 rm x', ['rm'], []],
       ['xargs rm < files', ['xargs'], [['unsupportedCommand', 'rm', 'win32']]],
       ['sh -c "rm x"', ['sh'], [['unsupportedCommand', 'rm', 'win32']]],
+      // The builtins of the shell that runs the script exist wherever it does
+      ['sh -c "export A=1 && . ./x && true && [ -f a ] && printf x"', ['sh'], []],
+      ['sh -c "set -e"', ['sh'], []],
+      [
+        'bash -c "source .env && cd x && export A=1 && read y && mapfile z"',
+        ['bash'],
+        [['unsupportedCommand', 'mapfile', 'darwin']],
+      ],
       ['./scripts/build.sh', ['./scripts/build.sh'], []],
       ['sed -i x f', ['sed'], []],
       // cmd.exe still reads the quotes differently
@@ -3323,6 +3406,8 @@ describe('analyzeScript', () => {
         'export CI=1 A="b c" && jest',
         [['export', 'Replace `export ... &&` with `cross-env`.', 'cross-env CI=1 A="b c" jest']],
       ],
+      // `cross-env` would run `exit` with the fix of `true`
+      ['export A=1 && true', [['true', exitZeroDescription('true'), 'export A=1 && exit 0']]],
       ['tsc || true', [['true', exitZeroDescription('true'), 'tsc || exit 0']]],
       ['tsc || :', [[':', exitZeroDescription(':'), 'tsc || exit 0']]],
       ['vitest && false', [['false', 'Replace `false` with `exit 1`.', 'vitest && exit 1']]],
@@ -3469,6 +3554,26 @@ describe('analyzeScript', () => {
             String.raw`--spec=test\unit\a.js`,
             String.raw`Replace ${'`'}--spec=test\unit\a.js${'`'} with ${'`'}--spec=test/unit/a.js${'`'}.`,
             'mocha --spec=test/unit/a.js',
+          ],
+        ],
+      ],
+      [
+        String.raw`node scripts\build.js`,
+        [
+          [
+            String.raw`scripts\build.js`,
+            String.raw`Replace ${'`'}scripts\build.js${'`'} with ${'`'}scripts/build.js${'`'}.`,
+            'node scripts/build.js',
+          ],
+        ],
+      ],
+      [
+        String.raw`tsc --outDir ..\dist`,
+        [
+          [
+            String.raw`..\dist`,
+            String.raw`Replace ${'`'}..\dist${'`'} with ${'`'}../dist${'`'}.`,
+            'tsc --outDir ../dist',
           ],
         ],
       ],
@@ -3690,8 +3795,17 @@ describe('analyzeScript', () => {
       "echo 'cost: $5' | tee log",
       // A double quote would end the outer string
       `concurrently "eslint 'src'"`,
-      // OS utilities don't expand globs themselves
+      // OS utilities and other well-known programs don't expand globs themselves
       'cat src/**/*.js',
+      'tar -czf a.tgz dist/**/*.js',
+      'git add src/**/*.ts',
+      'docker build -f docker/**/Dockerfile .',
+      'python lint.py src/**/*.py',
+      'node build.js src/**/*.ts',
+      // POSIX shells keep the backslashes of a regex in double quotes
+      String.raw`jest -t "adds\stwo\snumbers"`,
+      String.raw`jest -t "v\d\.\d"`,
+      String.raw`mocha --grep "User\sLogin\sTest"`,
       // `&&` would run `echo` when `tsc` fails
       'tsc; vite build || echo failed',
       'tsc; vite build &',
@@ -3701,6 +3815,10 @@ describe('analyzeScript', () => {
       // The file may be in `PATH`, where macOS' `sh` looks first
       '. env.sh',
       './bin/cli',
+      // A command or builtin with the same name would run instead, e.g. cmd.exe's `del`
+      './node_modules/.bin/del dist',
+      'node_modules/.bin/copy a b',
+      'node_modules/.bin/Copy a b',
       // cmd.exe's own commands treat `/` as an option prefix
       String.raw`cd .\src\lib`,
       String.raw`IF EXIST .\dist RMDIR /Q /S .\dist`,
@@ -3720,6 +3838,9 @@ describe('analyzeScript', () => {
       '{ A=1; } && echo $A',
       // In a subshell, `exec` doesn't replace the shell that runs the commands that follow
       '{ exec node x; } && tsc',
+      // `wait` doesn't wait for the jobs of a subshell
+      '{ node a.js & node b.js & } && wait',
+      '{ { node a.js & }; } && wait',
       // dash sets `PORT` before it expands `$PORT`, but the shell would expand the arguments of
       // `cross-env` before `cross-env` sets any of them
       'PORT=3000 URL=http://localhost:$PORT node x',
@@ -3728,6 +3849,7 @@ describe('analyzeScript', () => {
       'A=1 cd x',
       'A=1 B+=2 jest',
       'A=1 exec node x',
+      'A=1 :',
       'export A=1 && cd x',
       // In double quotes, the placeholder would be reported as a Windows variable
       "lokalise2 file download --bundle-structure '%LANG_ISO%.json'",

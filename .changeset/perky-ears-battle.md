@@ -44,3 +44,10 @@ Fixed several wrong fixes and reports:
 - Started quoting the `**/` globs that the fix of backslash paths creates, like for `src\**\*.js`, and made the `exit 0` fix for `true` and `:` say that Bash rejects it if the script gets extra arguments
 - Started reporting cmd.exe's `type`, the scripts of `sh -c -e "..."`, single quotes in the arguments of ignored shells and `find` on Windows, and del-cli's `del` and ignored commands in the wrong case on Linux, like `DEL` and `RM`
 - Stopped reporting `dir` on Linux in Yarn's shell, and `du --si` and `df --si` on macOS
+- Stopped fixes from replacing backslashes in words that may be regexes, like `"adds\stwo"` in `jest -t`, and from quoting `**/` globs for programs that don't expand them, like `tar` and `git`
+- Stopped fixes from adding `&&` after an operator and a carriage return, from replacing `{ ... }` with `( ... )` when it starts background jobs, and from shortening binary paths to the names of OS commands or builtins, like `./node_modules/.bin/del`
+- Stopped the `cross-env` fixes for `A=1 :` and `export A=1 && true`
+- Stopped reporting a quoted `"=="` in `[ ... ]`, and on Windows the builtins of ignored shells, like `export` in `sh -c "..."`
+- Started reporting `{fd}>` redirections on macOS, `timeout 5` without a command on macOS and Linux instead of Windows, and `type` in Yarn's shell
+- Fixed the report of `trap ... ERR` for dash, which fails on it instead of ignoring the trap
+- Stopped throwing on `runnerAgnosticScripts: null`

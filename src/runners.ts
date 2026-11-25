@@ -45,7 +45,7 @@ export const RUNNER_AGNOSTIC_SCRIPTS: ReadonlySet<string> = new Set([
  */
 export const isRunnerAgnosticScript = (
   scriptName: string | undefined,
-  scripts: boolean | Readonly<Record<string, boolean>> = {},
+  scripts?: boolean | Readonly<Record<string, boolean>>,
 ) => {
   if (typeof scripts === 'boolean') {
     return scripts;
@@ -53,8 +53,9 @@ export const isRunnerAgnosticScript = (
   if (scriptName == null) {
     return false;
   }
-  // Not `scripts[scriptName] ?? ...`: names like `constructor` are inherited properties
-  return Object.hasOwn(scripts, scriptName)
+  // Not `scripts[scriptName] ?? ...`: names like `constructor` are inherited properties. `null`
+  // from JavaScript callers means the defaults too
+  return scripts != null && Object.hasOwn(scripts, scriptName)
     ? scripts[scriptName] === true
     : RUNNER_AGNOSTIC_SCRIPTS.has(scriptName);
 };

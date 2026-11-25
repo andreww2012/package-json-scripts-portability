@@ -11,7 +11,13 @@ import type {
   Word,
   WordPart,
 } from 'unbash';
-import {CMD_BUILTINS, OS_COMMANDS, PATTERN_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
+import {
+  CMD_BUILTINS,
+  NON_GLOB_PROGRAMS,
+  OS_COMMANDS,
+  PATTERN_COMMANDS,
+  SHELL_STATE_COMMANDS,
+} from './commands.ts';
 import {
   type Context,
   type Range,
@@ -177,6 +183,8 @@ const FILE_EXTENSION = /\.\w+$/;
 const MULTIPLE_BACKSLASHES = /\\.*\\/;
 /** Backslashes that only escape dots are likely a regex, e.g. `logging\.spec\.ts` */
 const NON_DOT_ESCAPE = /\\[^.]/;
+/** A backslash that is neither a regex escape of a dot nor a character class, e.g. `\s` */
+const NON_REGEX_ESCAPE = /\\(?![.bdsw])/i; // cspell:disable-line
 
 const hasBashArithmetic = (expression: ArithmeticExpression | undefined): boolean => {
   switch (expression?.type) {
@@ -246,7 +254,7 @@ const crossEnvPrefixFixes = new WeakMap<Command, ScriptFix | undefined>();
 /**
  * Gets a fix that prefixes a command with `cross-env`, which takes over its assignments.
  * It needs a command with only plain assignments before it, and can't run shell builtins, e.g. `cd`
- * in `A=1 cd x`.
+ * in `A=1 cd x` or `:`.
  * dash applies assignments one by one, e.g. `$A` in `A=1 B=$A cmd` is `1`, while the shell expands
  * the arguments of `cross-env` before it sets any of them.
  * @param command The command
@@ -258,9 +266,11 @@ const crossEnvPrefixFix = (command: Command) => {
   }
 
   const names = new Set<string>();
+  const name = (command.name && staticValue(command.name)) || '';
   const edits =
+    name !== ':' &&
     command.name != null &&
-    !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '') &&
+    !SHELL_STATE_COMMANDS.has(name) &&
     command.prefix.every((item) => {
       if (!isPlainAssignment(item) || doesMentionVariables(item.value.text, names)) {
         return false;
@@ -989,8 +999,10 @@ export class WordChecker {
           syntax: `The unquoted glob \`${snippet(context, word)}\``,
         },
         PLATFORMS,
-        // OS utilities don't expand globs themselves
-        isTool(options.command) && isPlainWord(word, GLOB_PART_TYPES)
+        // OS utilities and some other programs don't expand globs themselves
+        isTool(options.command) &&
+          !setHas(NON_GLOB_PROGRAMS, options.command) &&
+          isPlainWord(word, GLOB_PART_TYPES)
           ? quoting(word, 'Quote it with escaped double quotes.')
           : undefined,
       );
@@ -1045,6 +1057,8 @@ export class WordChecker {
     const path = hasBackslash ? substringAfterLast(text.replaceAll('"', ''), '=') : '';
     const isBackslashPath = hasBackslash && BACKSLASH_PATH.test(path);
 
+    const hasPrefix = isBackslashPath && WINDOWS_PATH_PREFIX.test(path);
+    const hasExtension = isBackslashPath && FILE_EXTENSION.test(path);
     // Require a hint that it's a path (relative prefix, extension, or multiple separators), as
     // backslashes are also used for escapes
     if (
@@ -1053,11 +1067,11 @@ export class WordChecker {
       !options.text &&
       !setHas(PATTERN_COMMANDS, options.command) &&
       !state.hasSingleQuotes &&
-      (WINDOWS_PATH_PREFIX.test(path) ||
-        FILE_EXTENSION.test(path) ||
-        MULTIPLE_BACKSLASHES.test(path)) &&
+      (hasPrefix || hasExtension || MULTIPLE_BACKSLASHES.test(path)) &&
       NON_DOT_ESCAPE.test(path)
     ) {
+      // It may be a regex, e.g. `adds\stwo\snumbers` in `jest -t`, whose escapes the fix would break
+      const isLikelyRegex = !hasPrefix && !hasExtension && !NON_REGEX_ESCAPE.test(path);
       this.#reporter.report(
         context,
         word,
@@ -1070,7 +1084,7 @@ export class WordChecker {
         // Yarn's shell keeps the backslashes in double quotes, so they work on Windows
         context.portable && !text.startsWith('"') ? PLATFORMS : POSIX_PLATFORMS,
         // cmd.exe treats `/` as an option prefix in command names and its own commands
-        options.commandName || options.redirectTarget || !isTool(options.command)
+        isLikelyRegex || options.commandName || options.redirectTarget || !isTool(options.command)
           ? undefined
           : backslashPathFix(
               word,

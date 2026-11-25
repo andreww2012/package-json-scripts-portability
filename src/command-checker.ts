@@ -12,6 +12,7 @@ import {
   OS_COMMANDS,
   PACKAGE_MANAGER_VALUE_OPTIONS,
   PORTABLE_SHELL_BUILTINS,
+  POSIX_SHELL_BUILTINS,
   SHELL_STATE_COMMANDS,
   TIMEOUT_VALUE_OPTIONS,
   WRAPPER_VALUE_OPTIONS,
@@ -32,6 +33,7 @@ import {
 } from './messages.ts';
 import {
   LINUX_PLATFORMS,
+  NOT_LINUX_OR_WINDOWS,
   PLATFORMS,
   POSIX_PLATFORMS,
   type Platform,
@@ -294,6 +296,7 @@ const findUsageIssues = (
 
   const issues = checkCommandUsage(name, values, argumentWords, {
     bash: context.shell === 'bash',
+    native: context.shell === 'native',
     optionsEnd,
     portable: context.portable,
   });
@@ -376,6 +379,8 @@ export class CommandChecker {
 
     // In `export A=1 && jest`, only `jest` uses the variables
     const [exporting, command] = commands;
+    const commandName =
+      (command?.type === 'Command' && command.name && staticValue(command.name)) || '';
     // eslint-disable-next-line unicorn/prefer-early-return -- The condition is too long to negate
     if (
       list.type === 'AndOr' &&
@@ -389,8 +394,10 @@ export class CommandChecker {
       exporting.suffix.every(isPlainAssignment) &&
       command?.type === 'Command' &&
       command.name &&
-      // `cross-env` can't run shell builtins, e.g. `cd` in `export A=1 && cd x`
-      !SHELL_STATE_COMMANDS.has(staticValue(command.name) || '') &&
+      // `cross-env` can't run shell builtins, e.g. `cd` in `export A=1 && cd x`, and the fix that
+      // replaces e.g. `true` with `exit 0` would make it run `exit`
+      !SHELL_STATE_COMMANDS.has(commandName) &&
+      !EXIT_STATUSES.has(commandName) &&
       // The shell expands the command's variables before `cross-env` sets them, e.g. in
       // `next dev -p $PORT`
       !doesMentionVariables(
@@ -482,6 +489,17 @@ export class CommandChecker {
       );
     }
 
+    // Yarn's shell can't run cmd.exe's builtins, and Windows has no executable for it
+    if (lowerCaseName === 'type' && context.portable) {
+      return this.#reporter.report(
+        context,
+        nameWord,
+        'unsupportedCommand',
+        {command: name, suggestion: NODE_SCRIPT_SUGGESTION},
+        WINDOWS_PLATFORMS,
+      );
+    }
+
     if (context.portable && PORTABLE_SHELL_BUILTINS.has(name)) {
       return [];
     }
@@ -518,7 +536,11 @@ export class CommandChecker {
         (platform) => usageIssues.every((issue) => !issue.platforms.includes(platform)),
       );
     } else if (info?.bashBuiltin && context.shell === 'bash') {
-      platforms = arrayDifference(platforms, LINUX_PLATFORMS);
+      // The shell that runs the script has its builtins on all platforms, e.g. on Windows when it's
+      // an ignored command
+      platforms = arrayDifference(platforms, NOT_LINUX_OR_WINDOWS);
+    } else if (context.shell !== 'native' && POSIX_SHELL_BUILTINS.has(name)) {
+      platforms = arrayDifference(platforms, WINDOWS_PLATFORMS);
     }
 
     if (context.portable && CMD_BUILTINS.has(lowerCaseName)) {

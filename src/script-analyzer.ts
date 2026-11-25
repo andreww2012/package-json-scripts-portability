@@ -98,7 +98,7 @@ const doesChangeDirectory = (node: AndOr | PipelineNode) => {
 
 /**
  * Checks whether commands change the shell's state, e.g. with `exit` or a variable assignment.
- * @param node Commands of a command group
+ * @param node A command group or its commands
  * @returns Whether they do, or might, e.g. in an `if` statement
  */
 const doesChangeShellState = (node: AndOr | PipelineNode): boolean => {
@@ -108,7 +108,10 @@ const doesChangeShellState = (node: AndOr | PipelineNode): boolean => {
       return node.commands.some(doesChangeShellState);
     }
     case 'BraceGroup': {
-      return node.body.commands.some((statement) => doesChangeShellState(statement.command));
+      // `wait` only waits for the background jobs of the same shell
+      return node.body.commands.some(
+        (statement) => statement.background || doesChangeShellState(statement.command),
+      );
     }
     case 'Command': {
       return node.name
@@ -649,9 +652,7 @@ class ScriptAnalyzer {
 
       case 'BraceGroup': {
         // A subshell keeps e.g. `cd` and `exit` from affecting the commands that follow
-        const isSubshellSafe =
-          context.source[node.end - 1] === '}' &&
-          node.body.commands.every((statement) => !doesChangeShellState(statement.command));
+        const isSubshellSafe = context.source[node.end - 1] === '}' && !doesChangeShellState(node);
         const covered = this.#reporter.reportSyntax(
           context,
           {end: node.pos + 1, pos: node.pos},

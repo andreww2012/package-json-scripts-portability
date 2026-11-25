@@ -1,5 +1,5 @@
 // cspell:ignore libxo
-import {NO_LONG_OPTIONS_ON_MACOS} from './commands.ts';
+import {NO_LONG_OPTIONS_ON_MACOS, TIMEOUT_VALUE_OPTIONS} from './commands.ts';
 import {isDotfileName} from './fixes.ts';
 import {
   CROSS_ENV_SUGGESTION,
@@ -45,6 +45,8 @@ export interface UsageIssue {
 interface UsageOptions {
   /** Whether the command runs in Bash, e.g. in `bash -c "..."` */
   bash: boolean;
+  /** Whether the command runs in the runner's shell, which is cmd.exe on Windows */
+  native: boolean;
   /** Index of the first argument that can't be an option of the command, e.g. after `--` */
   optionsEnd: number;
   /** Whether the command runs in Yarn's portable shell */
@@ -139,7 +141,7 @@ export const checkCommandUsage = (
   words: readonly CommandWord[],
   options: UsageOptions,
 ) => {
-  const {bash, optionsEnd, portable} = options;
+  const {bash, native, optionsEnd, portable} = options;
   const textOf = (index: number) => words[index]?.text || '';
   const issues: UsageIssue[] = [];
   const optionIndex = (isMatch: (value: string, index: number) => boolean) =>
@@ -237,7 +239,8 @@ export const checkCommandUsage = (
 
     case '[':
     case 'test': {
-      const index = values.indexOf('==');
+      // A quoted `"=="` is an operand
+      const index = words.findIndex(({text}) => text === '==');
       if (isDash && index !== -1) {
         report(
           index,
@@ -521,7 +524,7 @@ export const checkCommandUsage = (
         break;
       }
 
-      if (SET_SHELL_OPTIONS.test(first)) {
+      if (native && SET_SHELL_OPTIONS.test(first)) {
         report(0, WINDOWS_PLATFORMS, {
           reason: "cmd.exe's `set` manages environment variables instead of shell options",
           suggestion: 'Remove it or use a Node.js script instead.',
@@ -566,10 +569,23 @@ export const checkCommandUsage = (
     }
 
     case 'timeout': {
+      // GNU's `timeout [options] duration command`
+      const duration = values.findIndex(
+        (value, index) =>
+          value == null ||
+          (!POSIX_OPTION.test(value) && !TIMEOUT_VALUE_OPTIONS.includes(values[index - 1] || '')),
+      );
+
       // e.g. `timeout /nobreak /t 10`
       if (TIMEOUT_CMD_OPTION.test(values[0] || '')) {
         report(0, POSIX_PLATFORMS, {
           reason: `\`${values[0] || ''}\` is an option of Windows' \`timeout\` command`,
+          suggestion: NODE_SCRIPT_SUGGESTION,
+        });
+      } else if (duration !== -1 && duration === values.length - 1) {
+        // e.g. `timeout 5`, where GNU's `timeout` fails
+        report(duration, POSIX_PLATFORMS, {
+          reason: "only Windows' `timeout` works without a command",
           suggestion: NODE_SCRIPT_SUGGESTION,
         });
       } else {
@@ -586,9 +602,9 @@ export const checkCommandUsage = (
       );
       if (isDash && index !== -1) {
         report(index, LINUX_PLATFORMS, {
-          reason: `${DASH} doesn't support the \`${values[index] || ''}\` condition, so it ignores the trap`,
+          reason: `${DASH} doesn't support the \`${values[index] || ''}\` condition`,
           suggestion: NODE_SCRIPT_SUGGESTION,
-          syntax: `\`trap ... ${values[index] || ''}\``,
+          usage: `trap ... ${values[index] || ''}`,
         });
       }
       break;

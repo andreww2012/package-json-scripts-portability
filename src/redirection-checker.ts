@@ -2,7 +2,7 @@ import type {Command, RedirectOperator, Redirection, Word} from 'unbash';
 import {type Context, bashLabel, originalText} from './context.ts';
 import {removal, replacement} from './fixes.ts';
 import {
-  BASH_SUGGESTION,
+  BASH_4_SUGGESTION,
   NODE_SCRIPT_SUGGESTION,
   describeReplacement,
   truncate,
@@ -120,9 +120,9 @@ export class RedirectionChecker {
         const {descriptor, operator} = redirection;
 
         if (descriptor?.type === 'FileDescriptorVariable') {
-          this.#reporter.reportSyntax(context, descriptor, 'bash', false, 'unsupportedSyntax', {
-            suggestion: BASH_SUGGESTION,
-            syntax: `The Bash-specific file descriptor variable \`{${descriptor.name}}\``,
+          this.#reporter.reportSyntax(context, descriptor, 'bash4', false, 'unsupportedSyntax', {
+            suggestion: BASH_4_SUGGESTION,
+            syntax: `The Bash 4 file descriptor variable \`{${descriptor.name}}\``,
           });
         }
 

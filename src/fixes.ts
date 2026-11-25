@@ -1,4 +1,14 @@
-import type {Assignment, BraceExpansionPart, Redirection, Statement, Word, WordPart} from 'unbash';
+import type {
+  AndOr,
+  Assignment,
+  BraceExpansionPart,
+  PipelineNode,
+  Redirection,
+  Statement,
+  Word,
+  WordPart,
+} from 'unbash';
+import {CMD_BUILTINS, OS_COMMANDS, SHELL_STATE_COMMANDS} from './commands.ts';
 import type {Range} from './context.ts';
 import {describeReplacement, truncate} from './messages.ts';
 import type {ScriptEdit, ScriptFix} from './reporter.ts';
@@ -19,6 +29,9 @@ const BACKSLASH_CODE_POINT = 92;
 const RM_OPTION = /^(?:-[Rfr]+|--force|--recursive)$/;
 /** A binary of a dependency, which package managers add to `PATH` */
 export const DEPENDENCY_BINARY = /^(?:\.\/)?node_modules\/\.bin\/([^/]+)$/;
+/** Commands that run instead of a dependency's binary with the same name, e.g. cmd.exe's `del` */
+const SHADOWING_COMMANDS: ReadonlySet<string> =
+  OS_COMMANDS.union(CMD_BUILTINS).union(SHELL_STATE_COMMANDS);
 const JAVASCRIPT_FILE = /\.[cm]?js$/;
 /** Characters that `rimraf --glob` treats as glob syntax, e.g. `[` */
 const GLOB_SYNTAX = /[(*?[\\\]{}]|^!/;
@@ -288,7 +301,9 @@ export const pathCommandFix = (
 ): ScriptFix | undefined => {
   const binary = DEPENDENCY_BINARY.exec(name)?.[1];
   if (binary) {
-    return isDirectoryChanged ? undefined : replacement(nameWord, nameWord.text, binary);
+    return isDirectoryChanged || SHADOWING_COMMANDS.has(binary.toLowerCase())
+      ? undefined
+      : replacement(nameWord, nameWord.text, binary);
   }
 
   return JAVASCRIPT_FILE.test(name)
@@ -345,12 +360,24 @@ export const braceExpansionFix = (word: Word, part: BraceExpansionPart) => {
 const hasAlternatives = ({command}: Statement) =>
   command.type === 'AndOr' && command.operators.includes('||');
 
+/** Checks whether a command is only a word with the given text, e.g. `\` */
+const isLoneWord = (node: AndOr | PipelineNode | undefined, text: string) =>
+  node?.type === 'Command' &&
+  node.prefix.length === 0 &&
+  node.name?.text === text &&
+  node.suffix.length === 0;
+
 /** Checks whether a statement is a lone `\` at the end of the script, which can't follow `&&` */
-const isTrailingBackslash = ({command}: Statement) =>
-  command.type === 'Command' &&
-  command.prefix.length === 0 &&
-  command.name?.text === '\\' &&
-  command.suffix.length === 0;
+const isTrailingBackslash = ({command}: Statement) => isLoneWord(command, '\\');
+
+/**
+ * Checks whether a statement ends with a command that is only a carriage return, e.g. after `&&`
+ * and before a line feed, whose fix removes it
+ */
+const doesEndWithCarriageReturn = ({command}: Statement) => {
+  const last = command.type === 'AndOr' ? command.commands.at(-1) : command;
+  return isLoneWord(last?.type === 'Pipeline' ? last.commands.at(-1) : last, '\r');
+};
 
 /**
  * Checks whether joining two statements with `&&` keeps the logic the same, apart from stopping
@@ -387,7 +414,10 @@ export const lineBreakFix = (
     // A here-document's closing line must stay on its own
     gapStart !== statement.end ||
     // e.g. after `\` and a carriage return, whose fix removes the carriage return instead
-    lineContinuationStart(source, gapStart + gap.indexOf('\n') + 1) !== -1
+    lineContinuationStart(source, gapStart + gap.indexOf('\n') + 1) !== -1 ||
+    // e.g. after `&&` and a carriage return, which is a command of its own, where `&&` can't
+    // follow `&&`
+    doesEndWithCarriageReturn(statement)
   ) {
     return undefined;
   }
