@@ -8,7 +8,7 @@ export default cspellConfig({
   words: {
     names: ['andreww', 'unbash', 'utilery'],
     utilities: ['arrayify'],
-    englishIshWords: ['redirections', 'subshell'],
+    englishIshWords: ['redirections', 'subshell', 'vulns'],
     // Commands that the analyzer knows, and their options
     commands: ['aubx', 'bunx', 'fuser', 'nohup', 'regextype', 'xcopy'],
     // Shell variables

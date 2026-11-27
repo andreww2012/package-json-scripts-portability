@@ -18,15 +18,11 @@ updateConfig:
 minimumReleaseAge: 960 # 16 hours in minutes
 minimumReleaseAgeStrict: false # Auto-adds too-new versions to the exclude list instead of prompting or failing
 minimumReleaseAgeExcludePrune: true
-minimumReleaseAgeExclude: # []
-  - actions-up@2.1.0
-  - knip@6.48.0
+minimumReleaseAgeExclude: []
 
 trustPolicy: no-downgrade
 trustPolicyIgnoreAfter: 43200 # 30 days in minutes
-trustPolicyExclude:
-  # Published by hand after its release workflow failed. Same code as v2.2.1
-  - lefthook@2.2.2
+trustPolicyExclude: []
 trustPolicyExcludePrune: true
 
 audit:
@@ -34,7 +30,7 @@ audit:
   ignorePrune: true
 
 allowBuilds:
-  lefthook@2.2.2: true
+  lefthook@2.2.4: true
 
   esbuild: false
   unrs-resolver: false
