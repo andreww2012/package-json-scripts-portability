@@ -22,17 +22,16 @@ export const RUNNERS: readonly Runner[] = allUnionMembers<Runner, {readonly: tru
   'yarn-classic',
 ]);
 
-/** Runners that are package managers: all of them but `node`, which doesn't install packages */
+/** Runners that are package managers, i.e. all of them but `node` */
 export const PACKAGE_MANAGER_RUNNERS: readonly Runner[] = arrayDifference(RUNNERS, ['node']);
 
-/**
- * Scripts that run with any package manager by default, as they run on the machine of whoever
- * installs the package: install scripts, and `prepare`, which runs when it's installed from git
- */
+/** Scripts that any package manager may run by default */
 export const RUNNER_AGNOSTIC_SCRIPTS: ReadonlySet<string> = new Set([
+  // Install scripts run on the machine of whoever installs the package
   'install',
   'postinstall',
   'preinstall',
+  // Also runs there when the package is installed from git
   'prepare',
 ]);
 
@@ -120,7 +119,7 @@ const RUNNER_TRAITS: Readonly<Record<Runner, RunnerTraits>> = {
   },
 };
 
-/** With `shell-emulator` on, pnpm runs the scripts with Yarn's portable shell */
+/** How pnpm runs the scripts with `shell-emulator` on, i.e. with Yarn's portable shell */
 const SHELL_EMULATOR_TRAITS: Readonly<Partial<Record<Runner, RunnerTraits>>> = {
   pnpm: {...RUNNER_TRAITS.pnpm, portableShell: true},
   'pnpm-10': {...RUNNER_TRAITS['pnpm-10'], portableShell: true},
@@ -131,7 +130,7 @@ const SAME_NAME_RUNNERS: ReadonlySet<Runner> = new Set(['aube', 'npm', 'upm']);
 
 /** A version in a version range, e.g. `1.22` in `^1.22 || ^4` */
 const RANGE_VERSIONS = /\d+(?:\.\d+){0,2}/g;
-/** Longer versions and version ranges are unknown: checking them takes too long */
+/** Maximum length of a version or a version range that is checked */
 const MAX_VERSION_CHARACTERS = 256;
 
 /**
@@ -142,6 +141,7 @@ const MAX_VERSION_CHARACTERS = 256;
  * @returns The major versions, or none for an unknown version, e.g. `latest`
  */
 const matchedMajors = (version: string, major: number) => {
+  // Checking longer ones takes too long
   if (version.length > MAX_VERSION_CHARACTERS) {
     return [];
   }

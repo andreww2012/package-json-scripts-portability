@@ -294,12 +294,9 @@ export const commandFix = (
 
 /**
  * Gets a fix for running a command by its path, e.g. `tsc` for `./node_modules/.bin/tsc`.
- * There's none for a JavaScript file, e.g. `./build.mjs`: its shebang may run it with something
- * else than `node`, like `zx`, `bun` or `node` with options
  * @param name Path that the command was invoked with
  * @param nameWord Word that the path comes from
- * @param isDirectoryChanged Whether a command before it changed the directory, e.g. `cd`, so that
- * the binary's name could run another package's binary
+ * @param isDirectoryChanged Whether a command before it changed the directory, e.g. `cd`
  * @returns The fix, if the path is a dependency's binary
  */
 export const pathCommandFix = (
@@ -307,7 +304,10 @@ export const pathCommandFix = (
   nameWord: Word,
   isDirectoryChanged: boolean,
 ): ScriptFix | undefined => {
+  // A JavaScript file gets no fix, e.g. `./build.mjs`, as its shebang may run it with something
+  // else than `node`, like `zx`, `bun` or `node` with options
   const binary = DEPENDENCY_BINARY.exec(name)?.[1];
+  // After a directory change, the binary's name could run another package's binary
   return binary && !isDirectoryChanged && !SHADOWING_COMMANDS.has(binary.toLowerCase())
     ? replacement(nameWord, nameWord.text, binary)
     : undefined;
@@ -317,16 +317,17 @@ export const pathCommandFix = (
  * Gets a fix that replaces the backslashes of a Windows path with slashes.
  * @param word The word with the path, e.g. `--config=configs\app.json`
  * @param original The word's text as the script has it
- * @param shouldQuote Whether to also quote the path, e.g. `src\**\*.js`, which would become a
- * recursive glob that `sh` doesn't support
- * @returns The fix, which only replaces the path: the text before it may have placeholders
+ * @param shouldQuote Whether to also quote the path, e.g. `src\**\*.js`
+ * @returns The fix, which only replaces the path
  */
 export const backslashPathFix = (word: Word, original: string, shouldQuote: boolean): ScriptFix => {
   const start = word.text.lastIndexOf('=') + 1;
   const path = toForwardSlashes(word.text.slice(start));
+  // Unquoted, `src/**/*.js` would be a recursive glob, which `sh` doesn't support
   const text = shouldQuote ? `"${path}"` : path;
   return {
     description: describeReplacement(original, `${original.slice(0, start)}${text}`),
+    // The text before the path stays, as it may have placeholders
     edits: [{end: word.end, pos: word.pos + start, text}],
   };
 };

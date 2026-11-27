@@ -1,7 +1,7 @@
 # package-json-scripts-portability [![npm](https://img.shields.io/npm/v/package-json-scripts-portability)](https://npmx.dev/package-json-scripts-portability)
 
 Finds `package.json` scripts that don't work the same on Windows, macOS and Linux, and suggests fixes.
-Package managers run scripts with cmd.exe on Windows and with `sh` elsewhere, and `sh` differs too: it's dash on Debian/Ubuntu and Bash 3.2 on macOS.
+Package managers run scripts with cmd.exe on Windows and with `sh` elsewhere, and `sh` differs too, as it's dash on Debian/Ubuntu and Bash 3.2 on macOS.
 
 - 🖥️ **Every platform**: cmd.exe on Windows, Bash 3.2 and BSD tools on macOS, dash and GNU tools on Linux.
 - 🔍 **Commands, syntax and options**: `rm`, `open`, `FOO=1 cmd`, `$VAR`, single quotes, `;`, `&`, `[[ ... ]]`, `sed -i`, `mkdir -p`, `%VAR%`, backslash paths and many more.
@@ -28,7 +28,7 @@ Package managers run scripts with cmd.exe on Windows and with `sh` elsewhere, an
 | `node scripts\build.js`        | macOS, Linux   | POSIX shells treat backslashes as escape characters         | `node scripts/build.js`                 |
 | `if exist dist rd /s /q dist`  | macOS, Linux   | It's cmd.exe syntax                                         |                                         |
 
-The scripts are shown as they are after JSON decoding: in `package.json`, `node scripts\build.js` is written as `"node scripts\\build.js"`.
+The scripts are shown as they are after JSON decoding, so `node scripts\build.js` is written as `"node scripts\\build.js"` in `package.json`.
 
 ## Usage
 
@@ -97,7 +97,8 @@ Object.entries<string>(packageJson.scripts || {}).forEach(([scriptName, script])
 
 ### Messages
 
-Issues don't contain ready-made messages: `messageId` tells the kind of the issue, and `data` has the parts of the message.
+Issues don't contain ready-made messages.
+Instead, `messageId` tells the kind of the issue, and `data` has the parts of the message.
 `platforms` and `runners` aren't in `data`, so that you can format them yourself, for example with `formatPlatforms` and `formatRunners`.
 
 | `messageId`            | `data`                           | Example message                                                                                                                                 |
@@ -219,7 +220,7 @@ The types `AnalyzeScriptOptions`, `Platform`, `Runner`, `ScriptEdit`, `ScriptFix
   Commands from npm packages, like `rimraf`, are assumed to work everywhere.
 - The scripts of shells (`sh -c`), `cross-env`, `concurrently`, `npx`, `npm exec`, `pnpm dlx` and the like, and of commands like `env` and `xargs` are checked.
   Other tools that run commands, like `nodemon --exec`, are not, since each of them takes different options.
-- Unquoted globs are only reported if they contain `**/`: many tools expand simpler globs themselves when the shell doesn't.
+- Unquoted globs are only reported if they contain `**/`, because many tools expand simpler globs themselves when the shell doesn't.
 - A tool's own `%NAME%` placeholder, like in `--bundle-structure "%LANG_ISO%.json"`, looks the same as a cmd.exe variable, so it's reported as one.
   In single quotes it isn't, but then the quotes are reported, since cmd.exe passes them on.
 - A script that isn't valid shell syntax is only checked for cmd.exe syntax like `if exist`.

@@ -1189,9 +1189,7 @@ class ScriptAnalyzer {
    * the last one, e.g. up to the closing parenthesis of `( ... )`
    * @param context Where the list is
    * @param kind What the list is: a whole script, the body of `( ... )` or `{ ... }` (a group), or
-   * another list, e.g. the body of `if`.
-   * cmd.exe ignores the rest of the script after a line break, which is only harmless after the
-   * last statement of a script
+   * another list, e.g. the body of `if`
    */
   #walkStatements(
     statements: readonly Statement[],
@@ -1257,7 +1255,8 @@ class ScriptAnalyzer {
         }
       }
 
-      // e.g. before the closing parenthesis of `( ... )`
+      // cmd.exe ignores the rest of the script after a line break, which is only harmless after
+      // the last statement of a script, e.g. not before the closing parenthesis of `( ... )`
       if ((next || kind === 'group') && gap.includes('\n')) {
         this.#lineBreaks.reportLineBreak(
           context,

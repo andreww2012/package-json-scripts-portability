@@ -1902,8 +1902,8 @@ describe('analyzeScript', () => {
           ],
         ],
       ],
-      // Each command is paired once: `true` is still reported, as it runs on Windows when `rmdir`
-      // fails
+      // Each command is paired once, so `true` is still reported, as it runs on Windows when
+      // `rmdir` fails
       ['rm -rf dist || rmdir /s /q dist || true', [['unsupportedCommand', 'true', 'win32']]],
       // Not an alternative for another platform
       ['rm -rf dist || echo failed', [['unsupportedCommand', 'rm', 'win32']]],
@@ -2391,8 +2391,8 @@ describe('analyzeScript', () => {
       ['mixed', ['yarn-classic', 'npm', 'yarn', 'node', 'pnpm-10', 'upm', 'aube', 'pnpm']],
     ])('with all runners %s', (_, runner) => {
       /**
-       * Summarizes the issues like `summarizeRunners`, but sorted, and with sorted runners: their
-       * order follows the order of the runners in the options.
+       * Summarizes the issues found in a script as sorted `messageId text platforms runners`
+       * strings, with sorted runners.
        * @param script Script source to analyze
        * @param options Options for the analysis
        * @returns A compact representation of each issue
@@ -2404,6 +2404,7 @@ describe('analyzeScript', () => {
               messageId,
               script.slice(pos, end),
               platforms.join(','),
+              // Unsorted, they follow the order of the runners in the options
               // eslint-disable-next-line unicorn/no-array-sort, sonar/no-misleading-array-reverse -- Sorts a new array
               runners.sort().join(','),
             ].join(' '),
@@ -3274,7 +3275,7 @@ describe('analyzeScript', () => {
           "lokalise2 file download --bundle-structure '%LANG_ISO%.json'",
           [['inconsistentBehavior', "'%LANG_ISO%.json'", 'win32']],
         ],
-        // A known limit: without single quotes, they can't be told from Windows variables
+        // Without single quotes, they can't be told from Windows variables, which is a known limit
         [
           'lokalise2 file download --bundle-structure "%LANG_ISO%.json"',
           [['unsupportedSyntax', '"%LANG_ISO%.json"', 'darwin,linux']],

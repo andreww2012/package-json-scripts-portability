@@ -19,16 +19,11 @@ const isDropped = (issue: RunnerIssue) => issue.platforms.length === 0;
 export class LineBreakChecker {
   /**
    * The issue of the last line break reported in each script, by where the script is and its
-   * source, to report one per script, e.g. per script of `concurrently` even if they're the same.
-   * The ones reported before it were dropped, or it wouldn't be reported
+   * source
    */
   readonly #lastIssues = new Map<string, RunnerIssue>();
 
-  /**
-   * Reported line breaks sorted by where they start in the analyzed script, to skip them in nested
-   * scripts.
-   * The ones whose issues weren't dropped don't overlap, as an overlapping one isn't reported
-   */
+  /** Reported line breaks sorted by where they start in the analyzed script */
   readonly #lineBreaks: ReportedLineBreak[] = [];
   readonly #reporter: Reporter;
 
@@ -107,6 +102,8 @@ export class LineBreakChecker {
     const range = rangeInScript(context, lineBreak);
     const scriptKey = `${context.offset} ${context.fixedRange?.pos ?? ''} ${context.source}`;
     const lastIssue = this.#lastIssues.get(scriptKey);
+    // Only one is reported per script, e.g. per script of `concurrently` even if they're the same.
+    // The ones reported before the last one were dropped, or it wouldn't be reported
     if ((lastIssue && !isDropped(lastIssue)) || this.#isOverlapReported(range)) {
       return;
     }
@@ -150,9 +147,9 @@ export class LineBreakChecker {
       (reported) => reported.range.pos < range.end,
     );
 
-    // Line breaks that weren't dropped don't overlap each other, so the ones before the last one
-    // that starts before the range ends also end before that one starts. If that one isn't empty
-    // and doesn't overlap the range, neither do they
+    // Line breaks that weren't dropped don't overlap each other, as an overlapping one isn't
+    // reported, so the ones before the last one that starts before the range ends also end before
+    // that one starts. If that one isn't empty and doesn't overlap the range, neither do they
     for (let index = end - 1; index >= 0; index--) {
       const reported = lineBreaks[index];
       if (!reported) {

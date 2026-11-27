@@ -1,6 +1,6 @@
 # Guidelines
 
-Source: <https://github.com/andreww2012/ai-guidelines/blob/@andreww2012/ai-guidelines@0.2.11/.agents/guidelines.md>
+Source: <https://github.com/andreww2012/ai-guidelines/blob/@andreww2012/ai-guidelines@0.3.0/.agents/guidelines.md>
 
 These are generic guidelines that might be copied or linked from a different repository.
 If anything stated here conflicts with the current project's rules or the prompt, those win.
@@ -14,12 +14,17 @@ Don't report how extensively you've verified/tested your work - if you feel the 
 
 Don't mention that you followed these guidelines or any other instruction unless it's very important: that is implied.
 
+The user may explicitly allow anything the guidelines forbid.
+Check how long such a permission lasts - once, until the end of the session or something else.
+If that isn't clear, treat it as a one-time permission.
+
 If someone points out that you violated the guidelines, explain why you deviated and suggest how to improve them, so that it's less likely to happen again.
 
 ## Communication and writing
 
-**CRITICAL:** Use plain/simple English for your output, while still respecting the language and prose style used in the current project for generated code.
+**CRITICAL:** Use plain/simple and clear English for your output, while still respecting the language and prose style used in the current project for generated code.
 Most likely you'll be read by people who are not native or C2-level speakers, so adapt accordingly.
+
 Avoid:
 
 - long dashes (like —, U+2014), the ellipsis character (…, U+2026), or quotation marks other than the plain `"` and `'` (like “ and ’, U+201C and U+2019, and others);
@@ -28,17 +33,23 @@ Avoid:
 - mannered prose;
 - advanced, fancy or rarely used words.
 
-If something can be said shorter and simpler without losing meaning, do it: people shouldn't waste energy just to understand you.
-In general, avoid verbosity and redundancy.
-Sound human.
+Don't overuse:
+
+- a colon that joins a statement with its explanation, like "The check failed: the cache was stale" (write two sentences instead, or join them with a word like "because", "so" or "which").
+
 None of the above is a hard ban: use anything if it actually fits.
+
+If something can be said shorter and simpler without losing meaning, do it: people shouldn't waste energy just to understand you.
+In general, strictly avoid verbosity and redundancy.
+Sound human.
 This applies to all languages, not only English.
 
 Avoid British variants of words like *behaviour* or *organisation* unless the project allows them.
 
 In Russian, prefer `ё` over `е`.
 
-In comments and docs, don't name symbols (variables), commands, files, etc. unless the reader needs the name: if the entity is renamed, the reference becomes stale.
+In comments and docs, strictly avoid naming symbols (variables), commands, files, etc. unless the reader needs the name.
+If the entity is renamed, the reference becomes stale.
 
 Code, comments, docs and other work artifacts must make sense without the session context: don't write anything that can't be understood without it, like `// as requested`, `// now uses X instead of Y` or mentions of earlier attempts.
 
@@ -65,9 +76,9 @@ If you need a utility or a utility type, first look for it in the project's own 
   - ❌ `str`, `arr`, `cls`, `brk`, `err`, `val`, `pkg`, `dir`, etc.
 
   Exceptions:
-  - ✅ `acc`, `char`, `coeff`, `ctx`, `dev`, `dict`, `env`, `fn`, `impl`, `param`, `w/(o)`
+  - ✅ `acc`, `char`, `coeff`, `ctx`, `dev`, `dict`, `env`, `fn`, `impl`, `param`, `repo`, `w/(o)`
   - ✅ `docs` (when it's shorthand for "documentation", not "documents")
-  - ✅ index variables like `i`/`j`/etc.
+  - ✅ index variables (`i`, `j`, etc.) and compare function parameters (`a`, `b`), as they are not shorthands
 
   The full word must mean the same thing: for example, `arguments` can't be a variable name in strict mode code, but `parameters` is not a valid substitute for `args`, because it means something else.
   Add, say, a trailing underscore (`arguments_`) instead.
@@ -80,7 +91,9 @@ If you need a utility or a utility type, first look for it in the project's own 
   - A type annotation is fine when it gives useful IDE autocomplete.
     The most common case: a variable that is later assigned to a property with a complex type (like an object) should get a type annotation, even though the assignment is type-checked without it.
 - Don't `export` symbols that are neither used in other files nor part of the public API.
+  In other words, never add an `export` that changes nothing.
 - Hoist symbols and literals (like regexes, functions, constants, arrays, `Set`, etc.) as high as possible.
+  Exceptions: types, values whose state must not be shared between calls (like a regex with the `g`/`y` flag), and values that are costly to create but only needed sometimes.
 - Prefer non-strict equality for `null` and `undefined` comparisons (`== null`, `!= null`) unless it would actually change the existing logic.
 - Prefer "direct" conditions over negated ones:
   - ✅ `a ? b : c`, `if (a) { ... } else { ... }`
@@ -137,11 +150,14 @@ If you need a utility or a utility type, first look for it in the project's own 
 
 ### Comments
 
-- Only write comments that add real value, such as explaining *truly* non-obvious choices or behavior that are very hard to understand from code alone.
+- **CRITICAL:** Only write comments that add real value, such as explaining *truly* non-obvious choices or behavior that are very hard to understand from code alone.
   Never repeat what the code already says: if someone reading the code for the first time wouldn't learn anything new from the comment, drop it.
-- Keep comments short and clear, but don't lose their value.
+- Keep comments *short* and clear, but don't lose their value.
 - Wrap comments to fit the max line length (usually set in `.editorconfig` or the formatter config).
   In block comments (like `<!-- ... -->` or `/* ... */`, but not JSDoc), keep the opening marker on the first line of the text and the closing marker on the last one.
+- JSDoc should describe what the symbol does or is.
+  Keep reasons and implementation details out of it, because JSDoc is usually read separately from the symbol's code.
+  They should go, if needed, into regular comments next to the code.
 
 ### Documentation
 
@@ -160,20 +176,6 @@ For containers with dynamic text, use `overflow-wrap: anywhere` unless you genui
 
 Keep Tailwind classes in markup, not in script strings: tools usually can't lint, sort or check them there.
 
-#### Vue
-
-- Move static variables into a separate non-setup `<script>` block in Vue SFCs for performance (if there are only type declarations to move, this won't change anything).
-- Do use inline composables: <https://alexop.dev/posts/inline-vue-composables-refactoring>
-- Prefer `shallowRef` over `ref`, but only when that actually makes a difference (for example, `shallowRef(false)` does not).
-- Avoid `reactive`; only use it when strictly necessary.
-- Don't add `| null` as a possible type for refs for no reason - usually implicit `undefined` works just fine.
-- Prefer `useTemplateRef` if it's available, and prefer not to add an explicit type parameter to it.
-- Don't end an element's text with whitespace, including a line break before the closing tag: Vue keeps it as a space, which some browsers show when the text is selected.
-  The same goes for whitespace before an element that may not render or be visible (`v-if`, `v-show`, etc.): move the space inside it, like `{{ label }}<span v-if="..."> (optional)</span>`.
-  If the element has nothing but text, also start the text right after the opening tag.
-- In runtime props declarations (not type-based), always set `required: true|false` explicitly.
-- Don't put HTML comments at the root of `<template>`: Vue keeps them only in dev mode, where they make the component a fragment.
-
 ## Workflow
 
 ### General
@@ -191,10 +193,10 @@ This is a good place for these comments.
 If you find likely bugs in dependencies, mention them at the end of your work.
 If the user asks you to draft an issue, draft it in the same session (NEVER send it to the Internet):
 
-- in raw Markdown, with the issue title and body in separate code blocks;
+- in raw Markdown, with the issue title and body in separate code blocks (one block per field if the issue template has several fields);
 - with *minimal* text and a *minimal* reproduction;
 - with the "Writing on the hosting platform" rules applied;
-- with a direct link where the issue can be reported.
+- with a direct link where the issue can be reported, shown as a plain URL.
 
 Before running any non-trivial command, check the machine's free resources, primarily RAM and CPU.
 Based on that, decide how to run such commands: in parallel, one by one, etc.
@@ -209,8 +211,9 @@ Keep what you add there as generic and short as reasonably possible: for example
 
 ### Version control
 
-NEVER stage/unstage or commit changes unless explicitly asked to, not even as a side effect: e.g. use `mv`/`rm`, not `git mv`/`git rm`.
-So never ask whether to commit when, judging by these rules, the answer would likely be "no".
+Never do anything that would lead to (un)staging or committing unless explicitly allowed to.
+Beware that some commands change the staging area as a side effect, like `git reset` or `git mv`/`git rm` (use plain `mv`/`rm` instead).
+Also never ask whether to commit, as the answer will most likely be "no".
 Assume your change may be staged or committed by a user (most likely) or another agent at any point.
 
 At the end of your work, *suggest* commit message(s) that follow the project's commit style.
@@ -306,7 +309,7 @@ These are comments like `eslint-disable-next-line <rule> -- <reason>`, `cspell:i
 
 #### CSpell
 
-If a word to ignore is only found in a single file, use the inline comment `cspell:disable(-next)-line`.
+If a word to ignore is only found in a single file, use the inline comment `cspell:disable-(next-)line`.
 Use a top-level `cspell:ignore <words>` comment instead if the word occurs more than once in the file or the inline comment can't be used.
 
 ## Other
@@ -321,3 +324,7 @@ Always set `strictFlags: true` when using it.
   Prefer writing them in the past tense.
 - Keep changesets short: go straight to the main point and skip details most readers don't need.
   Assume no one has time to read changelogs closely and figure out what each change is about.
+- Don't sacrifice clarity for that.
+  Assume readers haven't seen the diff and don't know the project's context and terms well.
+  Say what has changed, not only where.
+- Don't start a changeset with a list item, because changelogs put its first line right after the entry's own bullet, which leaves an extra dash in the text.

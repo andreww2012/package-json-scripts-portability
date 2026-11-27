@@ -105,8 +105,6 @@ const isYarnCommandStart = (source: string, position: number) => {
 
 /**
  * Checks whether a command's name is in the wrong case, e.g. `MKDIR` for `mkdir`.
- * Linux finds commands by their exact name, unlike cmd.exe and macOS (with its default file system),
- * where only some shell builtins need it, e.g. `exit` on macOS
  * @param name Name that the command was invoked with
  * @returns Whether only its lower case is a known OS command
  */
@@ -129,6 +127,8 @@ const wrongCasePlatforms = (
 ) =>
   PLATFORMS.filter(
     (platform) =>
+      // Linux finds commands by their exact name, unlike cmd.exe and macOS (with its default file
+      // system), where only some shell builtins need it, e.g. `exit` on macOS
       platform === 'linux' ||
       platforms.includes(platform) ||
       (platform === 'darwin' && EXACT_NAME_BUILTINS.has(lowerCaseName)) ||

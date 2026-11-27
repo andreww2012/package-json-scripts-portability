@@ -68,10 +68,7 @@ const SYNTAX_PLATFORMS: ReadonlyDeep<Record<SyntaxKind, Record<Shell, Platform[]
 };
 
 export class Reporter {
-  /**
-   * Reported issues, including duplicates: an issue may be dropped later, e.g. in a platform
-   * fallback, while its duplicate stays
-   */
+  /** Reported issues, including duplicates */
   readonly issues: RunnerIssue[] = [];
 
   /**
@@ -80,9 +77,7 @@ export class Reporter {
    */
   readonly #failures = new WeakMap<RunnerIssue, readonly Platform[] | undefined>();
 
-  /**
-   * Length of the analyzed script, which `unbash`'s positions can exceed, e.g. after a trailing `\`
-   */
+  /** Length of the analyzed script */
   readonly #length: number;
 
   constructor(length: number) {
@@ -92,6 +87,8 @@ export class Reporter {
   /** The issues without duplicates by their keys, each on the platforms of all of its duplicates */
   get uniqueIssues() {
     const unique = new Map<string, RunnerIssue>();
+    // Duplicates are only merged here, as an issue may be dropped before that, e.g. in a platform
+    // fallback, while its duplicate stays
     this.issues.forEach((issue) => {
       const key = issueKey(issue);
       const existing = unique.get(key);
@@ -206,6 +203,7 @@ export class Reporter {
 
     if (remaining.length > 0) {
       const range = rangeInScript(context, node);
+      // The parser's positions can exceed the script's length, e.g. after a trailing `\`
       const pos = clamp(range.pos, 0, this.#length);
       this.issues.push({
         data,

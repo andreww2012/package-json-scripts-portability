@@ -367,12 +367,10 @@ export const COMMANDS: ReadonlyMap<string, CommandInfo> = new Map([
   ),
 ]);
 
-/**
- * Shell builtins that macOS' `sh` only finds by their exact name, unlike executables: there are no
- * executables for them, or only ones that run the builtin in a child process, which can't change
- * the shell's state, e.g. `/usr/bin/cd`
- */
+/** Shell builtins that macOS' `sh` only finds by their exact name, unlike executables */
 export const EXACT_NAME_BUILTINS: ReadonlySet<string> = new Set([
+  // They have no executables, or only ones that run the builtin in a child process, which can't
+  // change the shell's state, e.g. `/usr/bin/cd`
   ...BASH_BUILTINS.flatMap(([names]) => names),
   'alias',
   'bg',
@@ -650,11 +648,11 @@ export const SHELL_STATE_COMMANDS: ReadonlySet<string> = new Set([
 
 /**
  * Shell builtins that Yarn's portable shell doesn't have, and that have no executables that work
- * the same, e.g. `export`.
- * `set` is checked along with its options, and `command` has executables on some platforms
+ * the same, e.g. `export`
  */
 export const NON_PORTABLE_BUILTINS: ReadonlySet<string> = new Set(
   [...SHELL_STATE_COMMANDS, ...EXACT_NAME_BUILTINS].filter(
+    // `set` is checked along with its options, and `command` has executables on some platforms
     (name) => !PORTABLE_SHELL_BUILTINS.has(name) && name !== 'command' && name !== 'set',
   ),
 );

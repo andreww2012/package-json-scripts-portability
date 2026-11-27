@@ -54,8 +54,9 @@ export interface Context {
   fixExclusions: readonly RegExp[];
 
   /**
-   * The range to report instead of node positions, e.g. in escaped backticks.
-   * Node positions can't be mapped to the analyzed script there, so there are no fixes either
+   * The range to report where node positions can't be mapped to the analyzed script, e.g. in
+   * escaped backticks.
+   * Fixes aren't reported there
    */
   fixedRange: Range | undefined;
   /** Offset of `source` in the analyzed script */

@@ -28,9 +28,9 @@ export const WHITESPACE = /\s/;
 /**
  * Replaces each character of the outer shell's expansions in the scripts that commands run, e.g.
  * of `$OUT` in `sh -c "tsc > $OUT"`.
- * Their values aren't known, so words with it aren't static.
- * It's U+FFFF, which Unicode reserves as a non-character, so scripts don't contain it
+ * Their values aren't known, so words with it aren't static
  */
+// Unicode reserves U+FFFF as a non-character, so scripts don't contain it
 export const PLACEHOLDER = '\u{FFFF}';
 
 export const GLOB_PART_TYPES: readonly WordPart['type'][] = [
@@ -52,7 +52,6 @@ const isStatic = (parts: readonly (DoubleQuotedChild | WordPart)[]): boolean =>
 /**
  * Gets the text that a command receives for a word, e.g. a script for `sh -c`.
  * The outer shell's expansions are replaced by placeholders of the same length.
- * Their results aren't known, and they're reported for the outer script already.
  * @param parts The word's parts
  * @param shouldKeepExpansions Whether to keep the expansions' text instead, e.g. for reports
  * @returns The text
@@ -75,6 +74,8 @@ export const nestedSource = (
           return nestedSource(part.parts, shouldKeepExpansions);
         }
         default: {
+          // The results of expansions aren't known, and they're reported for the outer script
+          // already
           return shouldKeepExpansions ? part.text : PLACEHOLDER.repeat(part.text.length);
         }
       }
@@ -121,8 +122,6 @@ const IDENTIFIER = /\w+/g;
 export const doesMentionVariables = (text: string, names: ReadonlySet<string>) =>
   (text.match(IDENTIFIER) || []).some((word) => names.has(word));
 
-/**
- * Device paths, e.g. `/dev/null`.
- * Unlike other absolute paths, they are rarely meant for containers or remote hosts
- */
+/** Device paths, e.g. `/dev/null` */
+// Unlike other absolute paths, they are rarely meant for containers or remote hosts
 export const POSIX_PATH = /(?:^|=)\/dev\//;

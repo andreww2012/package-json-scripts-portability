@@ -112,13 +112,10 @@ const BASH_VARIABLES: ReadonlyMap<string, SyntaxKind> = new Map([
   ['UID', 'bash'],
 ]);
 
-/**
- * Variables that POSIX shells and systems set, but Windows doesn't, e.g. `PWD`.
- * cmd.exe computes its own dynamic variables, like `%CD%`, so they aren't in the environment
- * either.
- * Some runners, like npm, set `HOME` on all platforms
- */
+/** Variables that POSIX shells and systems set, but Windows doesn't, e.g. `PWD` */
 const POSIX_ONLY_VARIABLES: ReadonlySet<string> = new Set([
+  // cmd.exe computes its own dynamic variables, like `%CD%`, so they aren't in the environment
+  // either. `HOME` isn't listed, as some runners, like npm, set it on all platforms
   ...BASH_VARIABLES.keys(),
   'LOGNAME', // cspell:disable-line
   'OLDPWD',
@@ -162,10 +159,8 @@ const NAMED_VARIABLE = /^\$\w+$/;
 /** A `**` path segment, which `sh` doesn't expand recursively */
 const RECURSIVE_GLOB = /(?:^|[/=])\*\*\//;
 
-/**
- * A cmd.exe variable, e.g. `%PORT%`. One-letter names are left out: they're mostly parts of
- * format strings, e.g. `%s%` in `--pretty=%s%n`
- */
+/** A cmd.exe variable with a name of two or more characters, e.g. `%PORT%` */
+// One-letter names are mostly parts of format strings, e.g. `%s%` in `--pretty=%s%n`
 const WINDOWS_VARIABLE = /%[a-z_]\w+%/i;
 const WINDOWS_VARIABLES = new RegExp(WINDOWS_VARIABLE, 'gi');
 /** Several percent-encoded bytes, e.g. `%C3%BC` for `ü` in a URL */
@@ -253,10 +248,6 @@ const crossEnvPrefixFixes = new WeakMap<Command, ScriptFix | undefined>();
 
 /**
  * Gets a fix that prefixes a command with `cross-env`, which takes over its assignments.
- * It needs a command with only plain assignments before it, and can't run shell builtins, e.g. `cd`
- * in `A=1 cd x` or `:`.
- * dash applies assignments one by one, e.g. `$A` in `A=1 B=$A cmd` is `1`, while the shell expands
- * the arguments of `cross-env` before it sets any of them.
  * @param command The command
  * @returns The fix, if `cross-env` runs the same command with the same variables
  */
@@ -268,10 +259,13 @@ const crossEnvPrefixFix = (command: Command) => {
   const names = new Set<string>();
   const name = (command.name && staticValue(command.name)) || '';
   const edits =
+    // `cross-env` needs a command, and can't run shell builtins, e.g. `cd` in `A=1 cd x` or `:`
     name !== ':' &&
     command.name != null &&
     !SHELL_STATE_COMMANDS.has(name) &&
     command.prefix.every((item) => {
+      // dash applies assignments one by one, e.g. `$A` in `A=1 B=$A cmd` is `1`, while the shell
+      // expands the arguments of `cross-env` before it sets any of them
       if (!isPlainAssignment(item) || doesMentionVariables(item.value.text, names)) {
         return false;
       }
@@ -893,12 +887,12 @@ export class WordChecker {
 
   /**
    * Reports a brace expansion in the target of a redirection, e.g. in `> out.{log,txt}`.
-   * Bash expands it into several words and fails, while other shells keep the braces.
    * @param part The brace expansion
    * @param context Where the redirection is
    */
   #checkRedirectionBraces(part: BraceExpansionPart, context: Context) {
-    // It's not known what Yarn's shell does
+    // Bash expands it into several words and fails, while other shells keep the braces. It's not
+    // known what Yarn's shell does
     if (!context.portable) {
       this.#reporter.report(
         context,
@@ -1107,7 +1101,7 @@ export class WordChecker {
 
     // In single quotes, it's likely the tool's own placeholder, e.g. in
     // `--bundle-structure '%LANG_ISO%.json'`. Anywhere else, such a placeholder can't be told from
-    // a variable, so it's reported too: a known limit
+    // a variable, so it's reported too, which is a known limit
     if (
       shouldCheckText &&
       !state.hasSingleQuotes &&
