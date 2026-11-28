@@ -1,5 +1,11 @@
 # package-json-scripts-portability
 
+## 0.0.4
+
+### Patch Changes
+
+- [`8a8d483`](https://github.com/andreww2012/package-json-scripts-portability/commit/8a8d483f10ab6bebf31e1f6158cd713b2c6263f4) - Added a `platforms` option to `analyzeScript`, which only reports issues on the given platforms and only lists the runners that have them there
+
 ## 0.0.3
 
 ### Patch Changes
