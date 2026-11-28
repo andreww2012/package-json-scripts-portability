@@ -1,4 +1,10 @@
-import {type AnalyzeScriptOptions, type Runner, analyzeScript, applyFix} from '../src/index.ts';
+import {
+  type AnalyzeScriptOptions,
+  type Platform,
+  type Runner,
+  analyzeScript,
+  applyFix,
+} from '../src/index.ts';
 
 type Summary = [messageId: string, text: string, platforms: string];
 type FixSummary = [text: string, description: string, fixed: string];
@@ -2307,6 +2313,35 @@ describe('analyzeScript', () => {
         );
       },
     );
+  });
+
+  describe('platforms', () => {
+    it.each<[Platform[], Summary[]]>([
+      [['linux', 'win32'], [['unsupportedCommand', 'open', 'linux,win32']]],
+      [['darwin'], []],
+      [[], []],
+    ])('reports `open` on %j', (platforms, expected) => {
+      expect(summarize('open http://localhost', {platforms})).toStrictEqual(expected);
+    });
+
+    it('ignores unknown platforms, e.g. from JavaScript', () => {
+      // eslint-disable-next-line un/no-type-assertion -- Not a platform
+      const unknownPlatform = 'bogus' as Platform;
+
+      expect(summarize('rm -rf dist', {platforms: [unknownPlatform, 'win32']})).toStrictEqual([
+        ['unsupportedCommand', 'rm', 'win32'],
+      ]);
+    });
+
+    it('only lists the runners that have an issue on the given platforms', () => {
+      // npm runs it with cmd.exe only on Windows, while Yarn's shell doesn't support `if` anywhere
+      expect(
+        summarizeRunners('if [ -d .git ]; then husky; fi', {
+          platforms: ['darwin', 'linux'],
+          runner: ['npm', 'yarn'],
+        }),
+      ).toStrictEqual([['unsupportedSyntax', 'if', 'darwin,linux', 'yarn']]);
+    });
   });
 
   describe('several runners', () => {

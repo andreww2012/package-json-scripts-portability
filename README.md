@@ -158,6 +158,7 @@ Whatever runs the scripts, the commands that package managers run are checked to
 
 Pass several runners to report what breaks with any of them, e.g. `runner: ['npm', 'pnpm']`.
 Each issue lists the runners that have it in `runners`, and is on the platforms where any of them has it.
+With the `platforms` option, both only take those platforms into account.
 Unknown runners are ignored, and without known ones the scripts are checked as npm runs them.
 
 ### Runner-agnostic scripts
@@ -188,6 +189,7 @@ Runner-agnostic scripts aren't checked with `node --run`, since it doesn't insta
 | ----------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dependencies`          | `[]`                          | Names of the package's dependencies. With [`del-cli`][del-cli], `del` is reported as cmd.exe's builtin, which takes precedence on Windows outside Yarn's shell. |
 | `ignoreCommands`        | `[]`                          | Commands not to report, e.g. ones that you install on every platform. The commands that they run are still checked.                                             |
+| `platforms`             | All platforms                 | Platforms that the scripts need to work on. Issues on other platforms aren't reported.                                                                          |
 | `runner`                | `'npm'`                       | What runs the scripts, or a list of runners, see [Package managers](#package-managers).                                                                         |
 | `runnerAgnosticScripts` | Install scripts and `prepare` | Scripts that are checked with all package managers, see [Runner-agnostic scripts](#runner-agnostic-scripts).                                                    |
 | `scriptName`            | None                          | The script's name in `package.json`, e.g. `postinstall`, to tell whether it's runner-agnostic.                                                                  |

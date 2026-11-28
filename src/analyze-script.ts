@@ -1,4 +1,4 @@
-import {PLATFORMS} from './platforms.ts';
+import {PLATFORMS, type Platform} from './platforms.ts';
 import type {RunnerIssue, ScriptIssue} from './reporter.ts';
 import {PACKAGE_MANAGER_RUNNERS, RUNNERS, type Runner, isRunnerAgnosticScript} from './runners.ts';
 import {analyzeWithRunners} from './script-analyzer.ts';
@@ -10,6 +10,13 @@ export interface AnalyzeScriptOptions {
 
   /** Commands that shouldn't be reported */
   ignoreCommands?: readonly string[];
+
+  /**
+   * Platforms that the script needs to work on.
+   * Issues are only reported on them, with the runners that have the issue on them.
+   * Defaults to all platforms
+   */
+  platforms?: readonly Platform[];
 
   /**
    * What runs the script: a package manager, or `node` for `node --run`.
@@ -45,9 +52,13 @@ const COMMENT_LINES = /^\s*#[^\n]*(?:\n\s*#[^\n]*)*$/;
  * A merged issue is on the platforms where any of the runners has it, and keeps its fix only if
  * all of them suggest the same one.
  * @param issuesByRunner The issues found with each runner, by their keys
+ * @param platforms The platforms to report the issues on
  * @returns The merged issues
  */
-const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, RunnerIssue>>) => {
+const mergeIssues = (
+  issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, RunnerIssue>>,
+  platforms: readonly Platform[],
+) => {
   const merged = new Map<string, ScriptIssue>();
   // Runners that run the script the same way share their issues, which are only merged once
   const mergedIssues = new Set<ReadonlyMap<string, RunnerIssue>>();
@@ -57,6 +68,12 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, Run
     mergedIssues.add(issues);
 
     issues.forEach((issue, key) => {
+      // Not after merging, which would list runners that only have the issue on other platforms
+      const issuePlatforms = arrayIntersection(issue.platforms, platforms);
+      if (issuePlatforms.length === 0) {
+        return;
+      }
+
       const existing = merged.get(key);
 
       if (existing) {
@@ -64,14 +81,14 @@ const mergeIssues = (issuesByRunner: ReadonlyMap<Runner, ReadonlyMap<string, Run
         if (!isMerged) {
           existing.platforms = arrayIntersection(PLATFORMS, [
             ...existing.platforms,
-            ...issue.platforms,
+            ...issuePlatforms,
           ]);
           if (!isEqual(existing.fix, issue.fix)) {
             existing.fix = undefined;
           }
         }
       } else {
-        merged.set(key, {...issue, runners: [runner]});
+        merged.set(key, {...issue, platforms: issuePlatforms, runners: [runner]});
       }
     });
   });
@@ -101,5 +118,6 @@ export const analyzeScript = (script: string, options?: AnalyzeScriptOptions) =>
     : arrayify(analysisOptions.runner).filter((runner) => KNOWN_RUNNERS.has(runner));
   return mergeIssues(
     analyzeWithRunners(script, analysisOptions, runners.length > 0 ? runners : DEFAULT_RUNNERS),
+    analysisOptions.platforms || PLATFORMS,
   );
 };
